@@ -1,0 +1,24 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane: XY
+      Cell Size: 0.25
+    - Class: rviz_default_plugins/RobotModel
+      Name: Course arm
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+  Global Options:
+    Fixed Frame: world
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.0
+      Pitch: 0.45
+      Yaw: 0.75

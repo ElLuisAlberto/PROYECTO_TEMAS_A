@@ -1,0 +1,3 @@
+# Test and static-description validation helpers.
+pytest>=7
+PyYAML>=6
