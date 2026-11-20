@@ -8,21 +8,20 @@ componente operativo obligatorio.
 
 ~~~
 Operador A ─┐
-Operador B ─┼── WebSocket/LAN ──► Laptop madre
-Operador C ─┘                       ├─ servidor web y sala
-                                    ├─ gestor de sesiones y leases
-                                    ├─ compositor de comandos
-                                    ├─ registro de eventos y métricas
-                                    └─ puente ROS 2 del curso
-                                                    │
-                                                    ▼
-                                      simulador independiente del curso
-                                      (Jaco2 y escena de tarea)
+Operador B ─┼─ WebSocket/LAN ──► gateway de la laptop madre
+Operador C ─┘                         ├─ servidor web y sala
+                                              ├─ sesiones y leases
+Consola nativa local ◄─ WebSocket ──────├─ compositor y telemetría
+  (solo observación)                         ├─ registro de eventos
+                                              └─ puente ROS 2
+                                                        │
+                                                        ▼
+                                              Gazebo + Jaco2 simulado
 ~~~
 
-## Módulos previstos
+## Módulos
 
-| Módulo futuro | Responsabilidad | No debe hacer |
+| Módulo | Responsabilidad | No debe hacer |
 | --- | --- | --- |
 | domain | Tipos, validación y constantes puras | Conocer sockets, ROS o simulador |
 | lease_manager | Reclamos, máximo de tres, expiración y liberación | Calcular cinemática |
@@ -30,9 +29,11 @@ Operador C ─┘                       ├─ servidor web y sala
 | gateway | WebSocket, sala y estado enviado a la web | Mandar órdenes directas al simulador |
 | ros_bridge | Publicar el único comando del curso hacia el simulador | Aceptar clientes web directamente |
 | telemetry | Persistir eventos y métricas por corrida | Participar en decisiones de control |
+| desktop_console | Mostrar estado y telemetría en la base | Reclamar ejes o acceder directamente a ROS |
 
-Los primeros tres módulos serán Python puro para que se puedan probar sin ROS,
-Gazebo ni navegador.
+Los primeros tres módulos son Python puro y se prueban sin ROS, Gazebo ni
+navegador. La consola nativa también separa su reductor de estado de Qt/VTK,
+por lo que sus mensajes se validan sin requerir una pantalla.
 
 ## Convención cartesiana
 
@@ -95,8 +96,14 @@ finito y pertenece a [-1, 1].
 | Cliente → madre | heartbeat | Mantener viva la sesión sin movimiento |
 | Cliente → madre | release | Soltar una o varias componentes |
 | Madre → cliente | welcome, room_state | Estado de sesión y propietarios |
-| Madre → cliente | claim_granted, claim_denied | Resultado de solicitud |
-| Madre → cliente | lease_revoked, telemetry, error | Eventos, mediciones y rechazos |
+| Madre → cliente | claim_granted, release_confirmed | Resultado de una reserva o liberación propia |
+| Madre → cliente | input_accepted, heartbeat_ack, error | Confirmaciones y rechazos controlados |
+
+El contrato original de H3 está en `docs/07_gateway_y_web_h3.md`. La versión
+integrada añade selección de rol, STOP/rearme administrativo remoto y
+telemetría observacional ROS/Gazebo mediante el puente cartesiano/IK. El
+procedimiento actualizado está en `docs/08_estacion_base_y_lan_segura.md`.
+El acceso LAN sin clave no autentica participantes; requiere una red confiable.
 
 ## Desconexión y parada
 

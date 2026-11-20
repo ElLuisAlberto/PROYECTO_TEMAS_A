@@ -4,7 +4,7 @@ project(course_teleop_description)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY urdf rviz
+  DIRECTORY meshes third_party urdf rviz
   DESTINATION share/course_teleop_description
 )
 

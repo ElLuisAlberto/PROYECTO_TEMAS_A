@@ -26,6 +26,24 @@
 | T11 | Falla del simulador o puente | Transición a FAULT, sin autoridad residual |
 | T12 | Dos operadores alcanzan un objetivo | Éxito o fallo registrado objetivamente |
 
+## Pruebas de protocolo H3
+
+| ID | Escenario | Resultado esperado |
+| --- | --- | --- |
+| P01 | Frame no JSON, array JSON o `type` inexistente | `error`; no cambia el estado ni el comando. |
+| P02 | `claim` antes de `hello` | `error`; no se crea ni concede lease. |
+| P03 | Dos sockets reclaman ternas disjuntas | Dos `claim_granted`, estado común y seis propietarios únicos. |
+| P04 | Socket B reclama un eje ya concedido a A | `error` con código `claim_denied`; todos los propietarios permanecen iguales. |
+| P05 | `input` con secuencia repetida, token ajeno o generación anterior | `error`; no cambia el twist ni se renueva la frescura. |
+| P06 | Cierre abrupto del socket A | Solo los ejes de A se ponen a cero y quedan disponibles; B permanece activo. |
+| P07 | Input vencido con heartbeat vigente | El eje se pone a cero, pero conserva su lease hasta el timeout de heartbeat. |
+| P08 | Heartbeat vencido | Se libera el eje y se difunde `room_state`. |
+| P09 | Gateway con arnés local, input válido y tick | Una sola pasada mueve pose/twist y emite `telemetry`; no existe doble avance. |
+| P10 | Falla del arnés local | La sala pasa a `FAULT`, las leases se revocan y la telemetría queda en cero. |
+
+La especificación de frames, ciclo de expiración y ensayo manual correspondiente
+está en [Gateway y web H3](07_gateway_y_web_h3.md).
+
 ## Perfiles de red
 
 Los perfiles se aplican entre navegadores y laptop madre, no dentro de la

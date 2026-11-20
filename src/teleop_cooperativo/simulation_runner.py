@@ -47,6 +47,11 @@ class SimulationRunner:
         self._last_step_monotonic = timestamp
         self.arbiter.mark_ready()
 
+    @property
+    def started(self) -> bool:
+        """Whether the runner is armed for a future bounded step."""
+        return self._last_step_monotonic is not None
+
     def step(self, *, now: float) -> RunnerStep:
         """Compose and apply one command; any failure moves the room to FAULT."""
         timestamp = self._finite_time(now)

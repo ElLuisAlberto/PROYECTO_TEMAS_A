@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JACO2 · Teleoperación cooperativa</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main class="app">
+  <header class="topbar">
+    <div><span class="eyebrow">ESTACIÓN COOPERATIVA · SIMULACIÓN</span><h1>JACO2 <span>Control remoto</span></h1></div>
+    <div class="top-right"><span id="connection" class="badge">Conectando…</span><button id="home" class="ghost" hidden>← Cambiar modo</button></div>
+  </header>
+
+  <section id="modes" class="screen">
+    <div class="intro"><span class="eyebrow">PASO 1 DE 2</span><h2>¿Cómo deseas participar?</h2><p>Selecciona un modo, revisa su disponibilidad y confírmalo para continuar.</p></div>
+    <div class="mode-grid">
+      <button class="mode-card" data-role="operator" aria-pressed="false"><span class="icon" aria-hidden="true">↔</span><strong>Operador</strong><span>Selecciona y controla hasta tres ejes.</span><small id="available-operator">Consultando…</small></button>
+      <button class="mode-card" data-role="observer" aria-pressed="false"><span class="icon" aria-hidden="true">◉</span><strong>Observador</strong><span>Consulta el estado del brazo sin moverlo.</span><small id="available-observer">Consultando…</small></button>
+      <button class="mode-card" data-role="admin" aria-pressed="false"><span class="icon" aria-hidden="true">⏻</span><strong>Administrador</strong><span>Supervisa, detiene y rearma la simulación.</span><small id="available-admin">Consultando…</small></button>
+    </div>
+    <div class="mode-actions"><p id="mode-description" aria-live="polite">Elige una tarjeta para empezar.</p><button id="confirm-mode" class="primary" disabled>Confirmar modo →</button></div>
+    <p id="mode-message" class="message" role="status">Esperando respuesta de la computadora madre…</p>
+  </section>
+
+  <section id="selection" class="screen" hidden>
+    <div class="intro"><span class="eyebrow">PASO 2 DE 2 · OPERADOR</span><h2>Elige tus componentes</h2><p>Selecciona de uno a tres ejes disponibles. La reserva se confirma al ingresar.</p></div>
+    <div id="axis-options" class="axis-options"></div>
+    <div class="actions"><button id="back" class="ghost">← Volver</button><span id="count">0 / 3 seleccionados</span><button id="enter" class="primary" disabled>Ingresar al control →</button></div>
+    <p id="selection-message" class="message" role="status"></p>
+  </section>
+
+  <section id="dashboard" class="screen dashboard" hidden>
+    <div class="dashboard-head"><div><span class="eyebrow" id="dashboard-kicker">SIMULACIÓN</span><h2 id="dashboard-title">Estado del brazo</h2></div><span id="room-state" class="badge">—</span></div>
+    <div class="dashboard-grid">
+      <article id="operator-panel" class="panel" hidden><div class="panel-head"><div><span class="eyebrow">TUS COMPONENTES</span><h3>Control cartesiano</h3></div><span class="hint">Mantén pulsado para mover</span></div><div id="controls" class="controls"></div></article>
+      <article id="admin-panel" class="panel" hidden><span class="eyebrow">ADMINISTRACIÓN</span><h3>Seguridad de la simulación</h3><p>STOP detiene el movimiento y libera todas las reservas. No es un paro físico.</p><div class="admin-actions"><button id="stop" class="danger">■ STOP global</button><button id="rearm" class="ghost">Rearmar</button></div></article>
+      <article class="panel telemetry"><div class="panel-head"><div><span class="eyebrow">ESTADO DEL BRAZO</span><h3>Telemetría</h3></div><span id="telemetry-status" class="badge">Sin datos</span></div><div id="telemetry" class="telemetry-values"></div><p id="telemetry-note" class="hint">Esperando datos de la madre.</p></article>
+      <article class="panel owners-panel"><span class="eyebrow">ESTADO COMPARTIDO</span><h3>Disponibilidad de ejes</h3><div id="owners" class="owners"></div></article>
+    </div>
+    <p id="dashboard-message" class="message" role="status"></p>
+  </section>
+  <footer>JACO2 J2N6S300 · Simulación · Las órdenes pasan por la computadora madre</footer>
+</main>
+</body>
+</html>

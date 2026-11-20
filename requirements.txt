@@ -1,0 +1,3 @@
+# ROS-compatible system Python also needs PyQt5, VTK and numpy (see docs/06).
+websockets>=12,<16
+pycollada>=0.8,<1

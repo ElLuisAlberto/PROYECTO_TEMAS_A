@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!-- ROS 2 / Gazebo Sim wrapper for the Kinova JACO2 J2N6S300 description. -->
+<robot name="jaco2_j2n6s300" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="$(find course_teleop_description)/urdf/j2n6s300.xacro"/>
+
+  <link name="world"/>
+  <xacro:j2n6s300 base_parent="world" prefix="j2n6s300"/>
+
+  <!-- The gripper is intentionally visual-only in this first ROS 2 route. -->
+  <ros2_control name="Jaco2GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <joint name="j2n6s300_joint_1">
+      <command_interface name="position"><param name="min">-6.283185307</param><param name="max">6.283185307</param></command_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="j2n6s300_joint_2">
+      <command_interface name="position"><param name="min">0.820304749</param><param name="max">5.462880559</param></command_interface>
+      <state_interface name="position"><param name="initial_value">2.617993878</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="j2n6s300_joint_3">
+      <command_interface name="position"><param name="min">0.331612558</param><param name="max">5.951572750</param></command_interface>
+      <state_interface name="position"><param name="initial_value">3.665191429</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="j2n6s300_joint_4">
+      <command_interface name="position"><param name="min">-6.283185307</param><param name="max">6.283185307</param></command_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="j2n6s300_joint_5">
+      <command_interface name="position"><param name="min">-6.283185307</param><param name="max">6.283185307</param></command_interface>
+      <state_interface name="position"><param name="initial_value">0.349065850</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="j2n6s300_joint_6">
+      <command_interface name="position"><param name="min">-6.283185307</param><param name="max">6.283185307</param></command_interface>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <parameters>$(find course_teleop_simulation)/config/jaco2_controllers.yaml</parameters>
+      <controller_manager_name>controller_manager</controller_manager_name>
+    </plugin>
+  </gazebo>
+</robot>

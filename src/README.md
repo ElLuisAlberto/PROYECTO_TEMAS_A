@@ -1,4 +1,4 @@
-# Implementación actual
+# Futura implementación
 
 H0 está cerrado. La primera entrega de código, H1, ya contiene un núcleo puro
 de dominio con reservas, expiración, validación de secuencias y composición
@@ -13,6 +13,9 @@ teleop_cooperativo/
   simulation_port.py   frontera abstracta con cualquier simulador
   tool_simulator.py    arnés cartesiano determinista
   simulation_runner.py ejecución segura y transición a FAULT
+  gateway.py           frontera WebSocket, sesiones y estado público de sala
+  local_simulation_runtime.py ciclo único árbitro → arnés determinista
+  event_log.py         evidencia JSONL de telemetría con reloj de la madre
 tests/                 pruebas unitarias sin red, ROS ni Gazebo
 ~~~
 
@@ -22,10 +25,15 @@ Ejecutar las pruebas desde este directorio:
 python3 -m unittest discover -s src/tests -v
 ~~~
 
-El sustituto articulado propio H2c ya existe en `ros2_ws/`. La descripción
-fiel JACO2 licenciada también fue incorporada, pero el siguiente hito es crear
-el adaptador cartesiano/IK y la integración ROS/Gazebo propios.
+H3 añade un gateway WebSocket, una interfaz estática en `../web` y, de forma
+opcional, el arnés cartesiano local con telemetría y log JSONL. El gateway
+requiere la dependencia opcional declarada en `../requirements.txt`; el núcleo
+anterior sigue sin dependencias de red. Ejecutar H3 se documenta en el README
+principal y en `../docs/07_gateway_y_web_h3.md`.
 
-IMPLEMENTACION_ROS2_CORE no se modifica ni se usa como dependencia. La única
-excepción de procedencia es el paquete BSD-3-Clause `jaco2_description`, cuyo
-aviso y registro de extracción están conservados en su propio directorio.
+El siguiente avance de integración será un adaptador cartesiano/IK entre el
+comando único del árbitro y el sustituto de Gazebo. El Jaco2 fiel se añadirá
+después con licencia y procedencia documentadas.
+
+No se copiará ni modificará código de IMPLEMENTACION_ROS2_CORE. Ese proyecto
+solo se consulta como referencia de conceptos, pruebas y organización.

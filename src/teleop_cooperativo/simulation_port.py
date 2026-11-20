@@ -16,6 +16,16 @@ class ToolPose:
     quaternion_xyzw: tuple[float, float, float, float]
 
 
+@dataclass(frozen=True)
+class TelemetrySample:
+    """Observed simulator state returned by an optional external bridge."""
+
+    source: str
+    pose: ToolPose
+    joint_positions: tuple[float, ...]
+    age_sec: float
+
+
 class SimulationPort(Protocol):
     """Minimum contract required by the mother-laptop runner."""
 

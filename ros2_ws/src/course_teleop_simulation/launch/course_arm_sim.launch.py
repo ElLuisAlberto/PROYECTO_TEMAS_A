@@ -1,17 +1,37 @@
 """Start the independent six-DOF substitute in Gazebo Fortress."""
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    FindExecutable,
+    IfElseSubstitution,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Build the complete headless H2c simulation."""
+    """Build the complete six-DOF simulation, with Gazebo GUI by default."""
+    headless = LaunchConfiguration("headless")
+    declare_headless = DeclareLaunchArgument(
+        "headless",
+        default_value="false",
+        description=(
+            "Run Gazebo without its graphical interface. "
+            "Use headless:=true for automated or display-less runs."
+        ),
+    )
+
     description_share = FindPackageShare("course_teleop_description")
     simulation_share = FindPackageShare("course_teleop_simulation")
     xacro_file = PathJoinSubstitution(
@@ -37,7 +57,13 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "gz_args": ["-r -s -v 2 ", world_file],
+            # Omit -s by default so the base station gets Gazebo's 3D GUI.
+            "gz_args": [
+                "-r ",
+                IfElseSubstitution(headless, "-s ", ""),
+                "-v 2 ",
+                world_file,
+            ],
             "gz_version": "6",
             "on_exit_shutdown": "true",
         }.items(),
@@ -98,6 +124,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            declare_headless,
             gazebo,
             robot_state_publisher,
             clock_bridge,

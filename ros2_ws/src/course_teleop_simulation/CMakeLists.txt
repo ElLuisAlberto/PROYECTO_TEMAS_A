@@ -4,7 +4,7 @@ project(course_teleop_simulation)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY config launch worlds
+  DIRECTORY config launch urdf worlds
   DESTINATION share/course_teleop_simulation
 )
 

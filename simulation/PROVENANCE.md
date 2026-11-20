@@ -14,14 +14,16 @@ La integración sigue las interfaces públicas documentadas por:
 - https://github.com/ros-controls/gz_ros2_control/tree/humble
 - https://gazebosim.org/docs/fortress/ros2_interop/
 
-## Modelo Jaco2 incorporado para H2d
+## Gemelo Jaco2 integrado
 
-La descripción BSD-3-Clause J2N6S300 está en
-`ros2_ws/src/jaco2_description`. Su aviso de licencia, atribución, subconjunto
-de archivos, revisión de la fuente inmediata y transformaciones locales están
-registrados en `KINOVA_LICENSE` y `UPSTREAM.md` dentro de ese paquete.
+- Modelo: Kinova JACO2 `J2N6S300` (6 GDL, muñeca no esférica, mano de tres
+  dedos).
+- Fuente: `Kinovarobotics/kinova-ros`, rama `noetic-devel`, revisión
+  `924781d3dfe241b2b94b3c72a804b80d3658cf02`.
+- Licencia: BSD-3-Clause, copyright Kinova Robotics inc. (2017).
+- Material y detalle de cambios: 
+  `ros2_ws/src/course_teleop_description/third_party/kinova_j2n6s300/IMPORT.md`.
 
-La incorporación no habilita aún el JACO2 fiel en Gazebo: falta su paquete de
-integración Fortress con `gz_ros2_control`, y el adaptador cartesiano/IK
-propio. No se incorporaron código operativo, interfaces, hardware, percepción
-ni dependencias del CORE de tesis.
+Las mallas visuales, límites e inercias proceden de esa descripción. El wrapper
+ROS 2, el control y las colisiones primitivas de tiempo real pertenecen a este
+proyecto. No se copiaron archivos desde IMPLEMENTACION_ROS2_CORE.

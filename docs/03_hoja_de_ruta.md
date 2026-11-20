@@ -41,10 +41,15 @@ reloj simulado, movimiento pequeño y retorno a la pose inicial.
 Salida H2d: el sustituto se reemplaza por un Jaco2 fiel obtenido de una fuente
 permitida, con licencia y procedencia registradas.
 
+Estado: completado con Kinova JACO2 J2N6S300, seis joints canónicos, mallas
+oficiales BSD-3-Clause y colisiones primitivas para mantener tiempo real.
+
 ## H3 — Gateway y web mínima
 
-Producto futuro: servicio WebSocket y página con sala, seis controles,
-reclamar/liberar y estado visible.
+Producto: servicio WebSocket y página con sala, seis controles,
+reclamar/liberar y estado visible. La implementación automatizada está lista;
+el cierre del hito requiere todavía el ensayo LAN con dos navegadores, logs y
+evidencia según `docs/07_gateway_y_web_h3.md`.
 
 Salida: dos navegadores en LAN reclaman ejes sin conflictos ni autoridad
 duplicada.
