@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="hybrid_jaco">
+  <!-- robot_name is retained as a launch/entity contract.  Xacro cannot use
+       an argument declared inside the root element to name that same root. -->
+  <xacro:arg name="robot_name" default="arm_02_jaco"/>
+  <xacro:arg name="namespace" default="arm_02"/>
+  <xacro:arg name="prefix" default="arm_02_jaco"/>
+  <xacro:arg name="root_name" default="arm_02_jaco_root"/>
+  <xacro:arg name="base_xyz" default="0 0 0"/>
+  <xacro:arg name="base_rpy" default="0 0 0"/>
+  <xacro:arg name="tool_mode" default="fixture"/>
+  <xacro:arg name="tool_mount_xyz" default="0 0 0"/>
+  <xacro:arg name="tool_mount_rpy" default="0 0 0"/>
+  <xacro:arg name="tool_tcp_xyz" default="0 0 0"/>
+  <xacro:arg name="tool_tcp_rpy" default="0 0 0"/>
+  <xacro:arg name="initial_pose" default="default"/>
+  <xacro:arg name="robot_param_node" default="robot_state_publisher"/>
+  <xacro:arg name="controller_manager_name" default="arm_02_controller_manager"/>
+  <xacro:arg name="controller_config"
+      default="$(find thesis_simulation)/config/arm_02_controllers.yaml"/>
+
+  <xacro:property name="prefix" value="$(arg prefix)"/>
+  <xacro:property name="use_z_ready"
+      value="${'$(arg initial_pose)' == 'z_ready'}"/>
+  <xacro:property name="joint_1_initial" value="0.0"/>
+  <xacro:property name="joint_2_initial"
+      value="${2.6179938779914944 if use_z_ready else 3.141592653589793}"/>
+  <xacro:property name="joint_3_initial"
+      value="${3.6651914291880923 if use_z_ready else 3.141592653589793}"/>
+  <xacro:property name="joint_4_initial" value="0.0"/>
+  <xacro:property name="joint_5_initial"
+      value="${0.3490658503988659 if use_z_ready else 0.0}"/>
+  <xacro:property name="joint_6_initial" value="0.0"/>
+
+  <xacro:include filename="$(find thesis_description)/urdf/j2n6s300.xacro"/>
+
+  <link name="world"/>
+  <link name="$(arg root_name)"/>
+  <joint name="${prefix}_world_joint" type="fixed">
+    <parent link="world"/>
+    <child link="$(arg root_name)"/>
+    <origin xyz="$(arg base_xyz)" rpy="$(arg base_rpy)"/>
+  </joint>
+
+  <xacro:j2n6s300
+      base_parent="$(arg root_name)"
+      prefix="${prefix}"
+      tool_mode="$(arg tool_mode)"
+      tool_mount_xyz="$(arg tool_mount_xyz)"
+      tool_mount_rpy="$(arg tool_mount_rpy)"
+      tool_tcp_xyz="$(arg tool_tcp_xyz)"
+      tool_tcp_rpy="$(arg tool_tcp_rpy)"/>
+
+  <ros2_control name="${prefix}_GazeboSimSystem" type="system">
+    <hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware>
+    <xacro:macro name="controlled_joint" params="index initial">
+      <joint name="${prefix}_joint_${index}">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:macro>
+    <xacro:controlled_joint index="1" initial="${joint_1_initial}"/>
+    <xacro:controlled_joint index="2" initial="${joint_2_initial}"/>
+    <xacro:controlled_joint index="3" initial="${joint_3_initial}"/>
+    <xacro:controlled_joint index="4" initial="${joint_4_initial}"/>
+    <xacro:controlled_joint index="5" initial="${joint_5_initial}"/>
+    <xacro:controlled_joint index="6" initial="${joint_6_initial}"/>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <ros>
+        <namespace>/$(arg namespace)</namespace>
+        <!-- JointStateBroadcaster uses absolute topics by default.  Convert
+             them to namespace-relative names so instances never share a
+             global /joint_states publisher. -->
+        <remapping>/joint_states:=joint_states</remapping>
+        <remapping>/dynamic_joint_states:=dynamic_joint_states</remapping>
+      </ros>
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>$(arg robot_param_node)</robot_param_node>
+      <parameters>$(arg controller_config)</parameters>
+      <controller_manager_name>$(arg controller_manager_name)</controller_manager_name>
+    </plugin>
+  </gazebo>
+</robot>

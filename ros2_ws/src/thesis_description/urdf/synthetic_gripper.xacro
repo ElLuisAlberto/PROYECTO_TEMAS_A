@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!-- Synthetic test geometry only: it does not represent the thesis CAD. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="synthetic_gripper" params="prefix">
+    <link name="${prefix}_synthetic_body">
+      <visual><origin xyz="0 0 0.025"/><geometry><box size="0.08 0.08 0.05"/></geometry><material name="synthetic_gripper_body"><color rgba="0.25 0.35 0.45 1"/></material></visual>
+      <collision><origin xyz="0 0 0.025"/><geometry><box size="0.08 0.08 0.05"/></geometry></collision>
+      <inertial><origin xyz="0 0 0.025"/><mass value="0.2"/><inertia ixx="0.000148333" ixy="0" ixz="0" iyy="0.000148333" iyz="0" izz="0.000213333"/></inertial>
+    </link>
+    <joint name="${prefix}_synthetic_body_joint" type="fixed"><parent link="${prefix}_gripper_base"/><child link="${prefix}_synthetic_body"/></joint>
+    <xacro:synthetic_gripper_finger prefix="${prefix}" side="left" x="0.045"/>
+    <xacro:synthetic_gripper_finger prefix="${prefix}" side="right" x="-0.045"/>
+  </xacro:macro>
+  <xacro:macro name="synthetic_gripper_finger" params="prefix side x">
+    <link name="${prefix}_synthetic_${side}_finger">
+      <visual><origin xyz="0 0 0.04"/><geometry><box size="0.02 0.02 0.08"/></geometry><material name="synthetic_gripper_finger"><color rgba="0.95 0.5 0.05 1"/></material></visual>
+      <collision><origin xyz="0 0 0.04"/><geometry><box size="0.02 0.02 0.08"/></geometry></collision>
+      <inertial><origin xyz="0 0 0.04"/><mass value="0.05"/><inertia ixx="0.000028333" ixy="0" ixz="0" iyy="0.000028333" iyz="0" izz="0.000003333"/></inertial>
+    </link>
+    <joint name="${prefix}_synthetic_${side}_joint" type="fixed">
+      <parent link="${prefix}_gripper_base"/><child link="${prefix}_synthetic_${side}_finger"/>
+      <origin xyz="${x} 0 0.05"/>
+    </joint>
+  </xacro:macro>
+</robot>

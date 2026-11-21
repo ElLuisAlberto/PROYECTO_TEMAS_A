@@ -1,0 +1,94 @@
+capsule_visualizer:
+  ros__parameters:
+    reference_frame: world
+    publish_rate_hz: 20.0
+    marker_topic: /thesis/robot_capsules
+
+    # Each row describes one capsule between two TF frame origins. All six
+    # remain in the kinematic and visualization envelope.
+    # Radii are initial conservative approximations and can be calibrated
+    # later against measurements of the physical JACO2.
+    # Historical preventive clearance selects upper_arm_to_forearm through
+    # wrist_2_to_tool by name; the two base capsules remain visualized.
+    segment_names:
+      - base_to_shoulder
+      - shoulder_to_upper_arm
+      - upper_arm_to_forearm
+      - forearm_to_wrist_1
+      - wrist_1_to_wrist_2
+      - wrist_2_to_tool
+    segment_start_frames:
+      - j2n6s300_link_base
+      - j2n6s300_link_1
+      - j2n6s300_link_2
+      - j2n6s300_link_3
+      - j2n6s300_link_4
+      - j2n6s300_link_5
+    segment_end_frames:
+      - j2n6s300_link_1
+      - j2n6s300_link_2
+      - j2n6s300_link_3
+      - j2n6s300_link_4
+      - j2n6s300_link_5
+      - j2n6s300_end_effector
+    # Conservative calibration for independently observable overlaps.
+    # Keep synchronized with thesis_core.jaco_kinematics.CAPSULE_RADII.
+    segment_radii:
+      - 0.105
+      - 0.105
+      - 0.085
+      - 0.075
+      - 0.085
+      - 0.090
+
+    color_rgba: [0.05, 0.80, 0.35, 0.38]
+
+proximity_monitor:
+  ros__parameters:
+    reference_frame: world
+    # Versioned identity propagated with every clearance decision. This
+    # preserves the six-capsule JACO2 model until gripper_v1 exists.
+    robot_id: arm_01
+    geometry_profile_id: jaco2_legacy
+    geometry_version: 1.0.0
+    geometry_asset_hash: c4b2cb9cf43989758fadbb8ab720bb3cd0f76b2b8cdacf77357f2c007aef1d26
+    geometry_state: nominal
+    evaluation_rate_hz: 20.0
+    status_topic: /thesis/proximity_status
+
+    segment_names:
+      - base_to_shoulder
+      - shoulder_to_upper_arm
+      - upper_arm_to_forearm
+      - forearm_to_wrist_1
+      - wrist_1_to_wrist_2
+      - wrist_2_to_tool
+    segment_start_frames:
+      - j2n6s300_link_base
+      - j2n6s300_link_1
+      - j2n6s300_link_2
+      - j2n6s300_link_3
+      - j2n6s300_link_4
+      - j2n6s300_link_5
+    segment_end_frames:
+      - j2n6s300_link_1
+      - j2n6s300_link_2
+      - j2n6s300_link_3
+      - j2n6s300_link_4
+      - j2n6s300_link_5
+      - j2n6s300_end_effector
+    # Same conservative calibration used by the predictive geometry.
+    segment_radii: [0.105, 0.105, 0.085, 0.075, 0.085, 0.090]
+
+    # Simulation launch files use the same pose for the Gazebo obstacle.
+    obstacle_x: 0.60
+    obstacle_y: 0.0
+    obstacle_z: 0.65
+    obstacle_radius: 0.12
+    obstacle_pose_topic: /world/jaco_world/pose/info
+    obstacle_frame: safety_obstacle
+    obstacle_pose_timeout_sec: 0.5
+
+    # Surface-to-surface clearance thresholds in metres.
+    warning_distance: 0.30
+    stop_distance: 0.05

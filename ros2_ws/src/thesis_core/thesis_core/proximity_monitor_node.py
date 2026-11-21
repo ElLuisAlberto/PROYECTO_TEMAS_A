@@ -1,0 +1,656 @@
+from dataclasses import replace
+import math
+import time
+
+import rclpy
+from builtin_interfaces.msg import Duration as DurationMessage
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.time import Time
+
+from geometry_msgs.msg import Point
+from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_msgs.msg import TFMessage
+
+from thesis_interfaces.msg import Obstacle
+from thesis_interfaces.msg import ProximityStatus
+from visualization_msgs.msg import Marker, MarkerArray
+
+from thesis_core.clearance_geometry import minimum_configuration_clearance
+from thesis_core.clearance_markers import clearance_markers
+from thesis_core.geometry_profile import (
+    CONFIGURED_STATES,
+    legacy_jaco_geometry_profile,
+)
+from thesis_core.jaco_kinematics import (
+    CAPSULE_RADII,
+    CLEARANCE_SEGMENT_NAMES,
+    SEGMENT_NAMES,
+)
+from thesis_core.work_table import configured_table, table_marker
+from thesis_core.obstacle_contract import validate_obstacle
+from thesis_core.ros_runtime import spin_node
+
+
+SAFETY_REFERENCE_FRAME = 'world'
+_LEGACY_PROFILE = legacy_jaco_geometry_profile()
+
+
+def geometry_status_is_valid(message):
+    """
+    Return whether a proximity result carries usable geometry evidence.
+
+    Test doubles created before the geometry contract are treated as legacy
+    evidence. Real ROS messages always expose ``geometry_valid`` and cannot
+    silently bypass the new fail-closed bit.
+    """
+    return bool(getattr(message, 'geometry_valid', True))
+
+
+def create_dedicated_tf_listener(buffer):
+    """Keep TF reception concurrent with bounded lookup callbacks."""
+    return TransformListener(buffer, None, spin_thread=True)
+
+
+
+
+class ProximityMonitorNode(Node):
+    """Evaluate minimum clearance between JACO2 capsules and an obstacle."""
+
+    def __init__(self):
+        super().__init__('proximity_monitor')
+
+        self.declare_parameter('reference_frame', 'world')
+        self.declare_parameter('evaluation_rate_hz', 20.0)
+        self.declare_parameter('tf_lookup_timeout_sec', 0.04)
+        self.declare_parameter('status_publishing_enabled', True)
+        self.declare_parameter('status_topic', '/thesis/proximity_status')
+        self.declare_parameter('segment_names', ['segment'])
+        self.declare_parameter('segment_start_frames', ['world'])
+        self.declare_parameter('segment_end_frames', ['world'])
+        self.declare_parameter('segment_radii', [0.05])
+        self.declare_parameter('obstacle_x', 0.60)
+        self.declare_parameter('obstacle_y', 0.0)
+        self.declare_parameter('obstacle_z', 0.65)
+        self.declare_parameter('obstacle_radius', 0.12)
+        self.declare_parameter(
+            'obstacle_pose_topic',
+            '/world/jaco_world/pose/info',
+        )
+        self.declare_parameter('obstacle_frame', 'safety_obstacle')
+        self.declare_parameter('obstacle_source_mode', 'gazebo')
+        self.declare_parameter(
+            'obstacle_input_topic', '/thesis/obstacle_in_model_frame'
+        )
+        self.declare_parameter('obstacle_pose_timeout_sec', 0.5)
+        self.declare_parameter('obstacle_max_age_sec', 0.5)
+        self.declare_parameter('obstacle_future_tolerance_sec', 0.05)
+        self.table = configured_table(self)
+        self.declare_parameter('warning_distance', 0.30)
+        self.declare_parameter('stop_distance', 0.05)
+        self.declare_parameter('robot_id', 'arm_01')
+        self.declare_parameter('geometry_profile_id', 'jaco2_legacy')
+        self.declare_parameter('geometry_version', '1.0.0')
+        self.declare_parameter(
+            'geometry_asset_hash', _LEGACY_PROFILE.asset_hash
+        )
+        self.declare_parameter('geometry_state', 'nominal')
+
+        self.reference_frame = str(
+            self.get_parameter('reference_frame').value
+        )
+        self.segment_names = list(
+            self.get_parameter('segment_names').value
+        )
+        self.start_frames = list(
+            self.get_parameter('segment_start_frames').value
+        )
+        self.end_frames = list(
+            self.get_parameter('segment_end_frames').value
+        )
+        self.radii = [
+            float(value)
+            for value in self.get_parameter('segment_radii').value
+        ]
+        self._validate_configuration()
+        self.geometry_identity = self._geometry_identity_from_parameters()
+
+        status_topic = str(self.get_parameter('status_topic').value)
+        self.publisher = self.create_publisher(
+            ProximityStatus,
+            status_topic,
+            10,
+        )
+        self.obstacle_marker_publisher = self.create_publisher(
+            MarkerArray,
+            '/thesis/obstacle_visualization',
+            10,
+        )
+        self.tf_buffer = Buffer(cache_time=Duration(seconds=5.0))
+        # `evaluate()` performs bounded exact-stamp lookups.  Spinning the TF
+        # listener through this node's executor would prevent `/tf` callbacks
+        # from filling the buffer while that timer callback is waiting.  Give
+        # the listener its own node and executor so the bounded wait can
+        # actually receive an arriving transform.  This does not change the
+        # requested frame or timestamp: `_frame_point()` still requests the
+        # obstacle acquisition stamp and a missing transform still yields STOP.
+        self.tf_listener = create_dedicated_tf_listener(self.tf_buffer)
+        self.obstacle_frame = str(
+            self.get_parameter('obstacle_frame').value
+        )
+        self.obstacle_source_mode = str(
+            self.get_parameter('obstacle_source_mode').value
+        ).lower()
+        if self.obstacle_source_mode not in ('gazebo', 'topic'):
+            raise ValueError('obstacle_source_mode must be gazebo or topic')
+        self.obstacle_pose_timeout_sec = float(
+            self.get_parameter('obstacle_pose_timeout_sec').value
+        )
+        self.obstacle_max_age_sec = float(
+            self.get_parameter('obstacle_max_age_sec').value
+        )
+        self.obstacle_future_tolerance_sec = float(
+            self.get_parameter('obstacle_future_tolerance_sec').value
+        )
+        if self.obstacle_pose_timeout_sec <= 0.0:
+            raise ValueError(
+                'obstacle_pose_timeout_sec must be greater than zero'
+            )
+        obstacle_pose_topic = str(
+            self.get_parameter('obstacle_pose_topic').value
+        )
+        self.dynamic_obstacle_center = None
+        self.dynamic_obstacle_velocity = (0.0, 0.0, 0.0)
+        self.dynamic_obstacle_stamp = None
+        self.previous_obstacle_center = None
+        self.previous_obstacle_time = None
+        self.last_obstacle_pose_time = None
+        self.topic_obstacle = None
+        self.last_topic_obstacle_time = None
+        self.obstacle_pose_subscription = self.create_subscription(
+            TFMessage,
+            obstacle_pose_topic,
+            self.obstacle_pose_callback,
+            10,
+        )
+        self.obstacle_input_subscription = self.create_subscription(
+            Obstacle,
+            str(self.get_parameter('obstacle_input_topic').value),
+            self.obstacle_input_callback,
+            10,
+        )
+        self.missing_frames = set()
+        self.previous_state = None
+
+        rate = float(self.get_parameter('evaluation_rate_hz').value)
+        self.tf_lookup_timeout_sec = float(
+            self.get_parameter('tf_lookup_timeout_sec').value
+        )
+        if not math.isfinite(rate) or rate <= 0.0:
+            raise ValueError('evaluation_rate_hz must be greater than zero')
+        if (not math.isfinite(self.tf_lookup_timeout_sec) or
+                self.tf_lookup_timeout_sec <= 0.0 or
+                self.tf_lookup_timeout_sec > 1.0 / rate):
+            raise ValueError(
+                'tf_lookup_timeout_sec must be positive and no greater '
+                'than the evaluation period'
+            )
+        self.timer = self.create_timer(1.0 / rate, self.evaluate)
+
+        self.get_logger().info(
+            f'Proximity monitor ready: {len(self.segment_names)} capsules'
+        )
+
+        self.get_logger().info(
+            f'Dynamic obstacle pose topic: {obstacle_pose_topic}; '
+            f'frame={self.obstacle_frame}'
+        )
+
+    def obstacle_input_callback(self, msg):
+        """Store a validated, already transformed obstacle estimate."""
+        if self.obstacle_source_mode != 'topic':
+            return
+        values = (
+            msg.center.x, msg.center.y, msg.center.z,
+            msg.velocity.x, msg.velocity.y, msg.velocity.z,
+            msg.radius, msg.uncertainty,
+        )
+        if (msg.header.frame_id != self.reference_frame or
+                not all(math.isfinite(value) for value in values) or
+                msg.radius <= 0.0 or msg.uncertainty < 0.0):
+            self.get_logger().warning(
+                'Ignoring invalid obstacle or unexpected reference frame'
+            )
+            return
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        try:
+            validate_obstacle(
+                (msg.center.x, msg.center.y, msg.center.z),
+                (msg.velocity.x, msg.velocity.y, msg.velocity.z),
+                msg.radius,
+                msg.uncertainty,
+                float(msg.header.stamp.sec) +
+                float(msg.header.stamp.nanosec) * 1e-9,
+                now_sec,
+                self.obstacle_max_age_sec,
+                self.obstacle_future_tolerance_sec,
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                f'Ignoring stale or invalid obstacle: {exc}'
+            )
+            self.topic_obstacle = None
+            self.last_topic_obstacle_time = None
+            return
+        self.topic_obstacle = (
+            Point(x=msg.center.x, y=msg.center.y, z=msg.center.z),
+            msg.radius + msg.uncertainty,
+            (msg.velocity.x, msg.velocity.y, msg.velocity.z),
+            msg.header.stamp,
+        )
+        self.last_topic_obstacle_time = time.monotonic()
+
+    def obstacle_pose_callback(self, msg):
+        """Track the obstacle pose bridged from Gazebo Pose_V."""
+        selected = None
+        for transform in msg.transforms:
+            child_frame = str(transform.child_frame_id)
+            root_frame = child_frame.replace('::', '/').split('/', 1)[0]
+            if child_frame == self.obstacle_frame or root_frame == (
+                    self.obstacle_frame):
+                selected = transform
+                break
+
+        if selected is None:
+            return
+
+        center = Point(
+            x=float(selected.transform.translation.x),
+            y=float(selected.transform.translation.y),
+            z=float(selected.transform.translation.z),
+        )
+        if not all(math.isfinite(value) for value in (
+            center.x, center.y, center.z
+        )):
+            self.dynamic_obstacle_center = None
+            self.dynamic_obstacle_stamp = None
+            self.previous_obstacle_center = None
+            self.previous_obstacle_time = None
+            return
+        now = time.monotonic()
+        source_time = (
+            float(selected.header.stamp.sec)
+            + float(selected.header.stamp.nanosec) * 1.0e-9
+        )
+        # Velocity is in metres per simulation second, not wall second.
+        # Reception age is still tracked independently with a monotonic clock.
+        self.dynamic_obstacle_velocity = (0.0, 0.0, 0.0)
+        if self.previous_obstacle_center is not None:
+            elapsed = source_time - self.previous_obstacle_time
+            if elapsed > 1.0e-9:
+                self.dynamic_obstacle_velocity = (
+                    (center.x - self.previous_obstacle_center.x) / elapsed,
+                    (center.y - self.previous_obstacle_center.y) / elapsed,
+                    (center.z - self.previous_obstacle_center.z) / elapsed,
+                )
+
+        self.dynamic_obstacle_center = center
+        self.previous_obstacle_center = center
+        self.previous_obstacle_time = source_time
+        self.last_obstacle_pose_time = now
+        self.dynamic_obstacle_stamp = selected.header.stamp
+
+    def _validate_configuration(self):
+        if self.reference_frame != SAFETY_REFERENCE_FRAME:
+            raise ValueError(
+                f'reference_frame must be {SAFETY_REFERENCE_FRAME!r}'
+            )
+        segment_count = len(self.segment_names)
+        sizes = (
+            segment_count,
+            len(self.start_frames),
+            len(self.end_frames),
+            len(self.radii),
+        )
+        if segment_count == 0 or len(set(sizes)) != 1:
+            raise ValueError(
+                'Capsule parameter arrays must have equal non-zero length'
+            )
+        if any(
+            not math.isfinite(radius) or radius <= 0.0
+            for radius in self.radii
+        ):
+            raise ValueError('Capsule radii must be finite and positive')
+        if tuple(self.segment_names) != SEGMENT_NAMES:
+            raise ValueError('Segment names differ from canonical geometry')
+        if len(self.radii) != len(CAPSULE_RADII) or any(
+            not math.isclose(actual, expected, abs_tol=1.0e-12)
+            for actual, expected in zip(self.radii, CAPSULE_RADII)
+        ):
+            raise ValueError('Capsule radii differ from canonical geometry')
+
+        warning = float(self.get_parameter('warning_distance').value)
+        stop = float(self.get_parameter('stop_distance').value)
+        if not 0.0 <= stop < warning:
+            raise ValueError(
+                'Thresholds must satisfy 0 <= stop < warning'
+            )
+
+    def _geometry_identity_from_parameters(self):
+        """Validate immutable identity attached to every proximity result."""
+        robot_id = str(self.get_parameter('robot_id').value).strip()
+        profile_id = str(
+            self.get_parameter('geometry_profile_id').value
+        ).strip()
+        version = str(self.get_parameter('geometry_version').value).strip()
+        asset_hash = str(
+            self.get_parameter('geometry_asset_hash').value
+        ).strip()
+        state = str(self.get_parameter('geometry_state').value).strip()
+        if not robot_id or not profile_id or not version:
+            raise ValueError(
+                'robot_id, geometry_profile_id and geometry_version '
+                'must be non-empty'
+            )
+        if len(asset_hash) != 64 or any(
+                character not in '0123456789abcdef'
+                for character in asset_hash):
+            raise ValueError('geometry_asset_hash must be a lowercase SHA-256')
+        if state not in CONFIGURED_STATES:
+            raise ValueError(
+                'geometry_state must name a configured conservative envelope'
+            )
+        if (
+            profile_id != _LEGACY_PROFILE.profile_id
+            or version != _LEGACY_PROFILE.geometry_version
+            or asset_hash != _LEGACY_PROFILE.asset_hash
+        ):
+            raise ValueError(
+                'the current capsule monitor supports only the explicit '
+                'jaco2_legacy geometry profile'
+            )
+        return robot_id, profile_id, version, asset_hash, state
+
+    def _attach_geometry_identity(self, message):
+        """Attach the geometry version used for the generated clearance."""
+        identity = getattr(self, 'geometry_identity', (
+            'arm_01',
+            _LEGACY_PROFILE.profile_id,
+            _LEGACY_PROFILE.geometry_version,
+            _LEGACY_PROFILE.asset_hash,
+            'nominal',
+        ))
+        (
+            message.robot_id,
+            message.geometry_profile_id,
+            message.geometry_version,
+            message.geometry_asset_hash,
+            message.geometry_state,
+        ) = identity
+        message.geometry_valid = True
+
+    def _frame_point(self, frame_name, source_stamp, timeout):
+        """Return a frame origin only at the obstacle acquisition time."""
+        transform = self.tf_buffer.lookup_transform(
+            self.reference_frame,
+            frame_name,
+            Time.from_msg(source_stamp),
+            timeout=timeout,
+        )
+        translation = transform.transform.translation
+        return Point(
+            x=translation.x,
+            y=translation.y,
+            z=translation.z,
+        )
+
+    def _obstacle(self):
+        if self.obstacle_source_mode == 'topic':
+            if (self.topic_obstacle is None or
+                    self.last_topic_obstacle_time is None or
+                    time.monotonic() - self.last_topic_obstacle_time >
+                    self.obstacle_pose_timeout_sec):
+                return None
+            obstacle, radius, velocity, source_stamp = self.topic_obstacle
+            if not 0 <= source_stamp.nanosec < 1_000_000_000:
+                return None
+            try:
+                validate_obstacle(
+                    (obstacle.x, obstacle.y, obstacle.z), velocity,
+                    radius, 0.0,
+                    float(source_stamp.sec) +
+                    float(source_stamp.nanosec) * 1e-9,
+                    self.get_clock().now().nanoseconds / 1e9,
+                    self.obstacle_max_age_sec,
+                    self.obstacle_future_tolerance_sec,
+                )
+            except ValueError:
+                return None
+            return obstacle, radius, velocity, source_stamp
+
+        radius = float(self.get_parameter('obstacle_radius').value)
+        if radius <= 0.0:
+            raise ValueError('obstacle_radius must be greater than zero')
+        if (
+            self.dynamic_obstacle_center is not None
+            and self.last_obstacle_pose_time is not None
+            and self.dynamic_obstacle_stamp is not None
+            and time.monotonic() - self.last_obstacle_pose_time
+            <= self.obstacle_pose_timeout_sec
+        ):
+            obstacle = self.dynamic_obstacle_center
+            source_stamp = self.dynamic_obstacle_stamp
+            if not 0 <= source_stamp.nanosec < 1_000_000_000:
+                return None
+            try:
+                validate_obstacle(
+                    (obstacle.x, obstacle.y, obstacle.z),
+                    self.dynamic_obstacle_velocity,
+                    radius, 0.0,
+                    float(source_stamp.sec)
+                    + float(source_stamp.nanosec) * 1.0e-9,
+                    self.get_clock().now().nanoseconds / 1.0e9,
+                    self.obstacle_max_age_sec,
+                    self.obstacle_future_tolerance_sec,
+                )
+            except ValueError:
+                return None
+            return obstacle, radius, self.dynamic_obstacle_velocity, source_stamp
+
+        # A configured spawn pose is not evidence that the Gazebo object still
+        # exists there. Never replace a missing source with a freshly dated
+        # fixed sphere: consumers must see an explicit invalid STOP instead.
+        return None
+
+    def _publish_tf_stop(
+        self, source_stamp, obstacle, obstacle_radius, reason
+    ):
+        """Publish a conservative STOP without claiming measured geometry."""
+        message = ProximityStatus()
+        message.stamp = source_stamp
+        message.reference_frame = self.reference_frame
+        ProximityMonitorNode._attach_geometry_identity(self, message)
+        message.geometry_valid = False
+        message.state = 'STOP'
+        message.minimum_clearance = 0.0
+        message.limiting_segment = reason
+        message.obstacle_center = obstacle
+        message.obstacle_radius = obstacle_radius
+        self.publisher.publish(message)
+        if (
+            self.previous_state != 'STOP'
+            or getattr(self, 'previous_invalid_reason', None) != reason
+        ):
+            self.get_logger().warning(f'Proximity STOP: {reason}')
+        self.previous_state = 'STOP'
+        self.previous_invalid_reason = reason
+
+    def _state_for_clearance(self, clearance):
+        if clearance <= float(self.get_parameter('stop_distance').value):
+            return 'STOP'
+        if clearance <= float(
+                self.get_parameter('warning_distance').value):
+            return 'WARNING'
+        return 'ALLOW'
+
+    def _publish_obstacle_marker(self, obstacle, radius, measurements=(), limiting=None, state=None):
+        """Show the current spherical estimate in RViz and let it expire."""
+        marker = Marker()
+        marker.header.frame_id = self.reference_frame
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'input_obstacle'
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position = obstacle
+        marker.pose.orientation.w = 1.0
+        diameter = 2.0 * radius
+        marker.scale.x = diameter
+        marker.scale.y = diameter
+        marker.scale.z = diameter
+        marker.color.r = 0.72
+        marker.color.g = 0.12
+        marker.color.b = 0.92
+        marker.color.a = 0.78
+        marker.lifetime = DurationMessage(sec=0, nanosec=300000000)
+        array = MarkerArray()
+        array.markers.append(marker)
+        if self.table:
+            array.markers.append(table_marker(self.table, marker.header))
+            if self.table.with_legs:
+                for index, (center, size) in enumerate(self.table.leg_boxes(self.table.center), 1):
+                    leg = table_marker(replace(self.table, center=center, size=size), marker.header)
+                    leg.id = index
+                    array.markers.append(leg)
+        for name, hit, color in measurements:
+            array.markers.extend(clearance_markers(
+                marker.header, name, hit, color, state if hit is limiting else None))
+        self.obstacle_marker_publisher.publish(array)
+
+    def evaluate(self):
+        # Test hook: retain all geometry and subscriptions while
+        # intentionally withholding fresh status publications.
+        if not bool(self.get_parameter('status_publishing_enabled').value):
+            return
+        obstacle_data = self._obstacle()
+        if obstacle_data is None:
+            self._publish_tf_stop(
+                self.get_clock().now().to_msg(), Point(), 0.0,
+                'OBSTACLE_UNAVAILABLE',
+            )
+            return
+        (
+            obstacle,
+            obstacle_radius,
+            obstacle_velocity,
+            source_stamp,
+        ) = obstacle_data
+        unavailable = set()
+        tf_errors = []
+        segments = []
+        tf_deadline = time.monotonic() + self.tf_lookup_timeout_sec
+
+        for start_frame, end_frame in zip(
+                self.start_frames, self.end_frames):
+            try:
+                start = self._frame_point(
+                    start_frame,
+                    source_stamp,
+                    Duration(seconds=max(0.0, tf_deadline - time.monotonic())),
+                )
+                end = self._frame_point(
+                    end_frame,
+                    source_stamp,
+                    Duration(seconds=max(0.0, tf_deadline - time.monotonic())),
+                )
+            except TransformException as exc:
+                unavailable.update((start_frame, end_frame))
+                tf_errors.append(str(exc))
+                continue
+            segments.append((
+                (start.x, start.y, start.z),
+                (end.x, end.y, end.z),
+            ))
+
+        if unavailable != self.missing_frames:
+            if unavailable:
+                self.get_logger().warning(
+                    'Waiting for TF frames: '
+                    + ', '.join(sorted(unavailable))
+                    + '; ' + '; '.join(tf_errors)
+                )
+            elif self.missing_frames:
+                self.get_logger().info(
+                    'All proximity TF frames are available'
+                )
+            self.missing_frames = unavailable
+
+        if unavailable or len(segments) != len(self.segment_names):
+            self._publish_obstacle_marker(obstacle, obstacle_radius)
+            self._publish_tf_stop(
+                source_stamp, obstacle, obstacle_radius, 'TF_UNAVAILABLE'
+            )
+            return
+
+        try:
+            result = minimum_configuration_clearance(
+                segments,
+                self.segment_names,
+                self.radii,
+                (obstacle.x, obstacle.y, obstacle.z),
+                obstacle_radius,
+                included_segment_names=CLEARANCE_SEGMENT_NAMES,
+            )
+        except ValueError as exc:
+            self.get_logger().error(f'Invalid proximity geometry: {exc}')
+            return
+
+        table = getattr(self, 'table', None)
+        measurements = []
+        if table is not None:
+            sphere = result
+            board = table.closest(segments, self.segment_names, self.radii)
+            result = min((sphere, board), key=lambda hit: hit.clearance)
+            measurements = [('Esfera', sphere, (.98, .80, .22)),
+                            ('Mesa', board, (1., .44, .06))]
+        state = self._state_for_clearance(result.clearance)
+        self._publish_obstacle_marker(obstacle, obstacle_radius, measurements, result, state)
+        closest = Point(
+            x=result.closest_robot_point[0],
+            y=result.closest_robot_point[1],
+            z=result.closest_robot_point[2],
+        )
+
+        message = ProximityStatus()
+        # Preserve acquisition time; receipt time is tracked separately by
+        # downstream consumers and must not make delayed geometry look fresh.
+        message.stamp = source_stamp
+        message.reference_frame = self.reference_frame
+        ProximityMonitorNode._attach_geometry_identity(self, message)
+        message.state = state
+        message.minimum_clearance = result.clearance
+        message.limiting_segment = result.segment_name
+        message.closest_robot_point = closest
+        message.obstacle_center = obstacle
+        message.obstacle_velocity.x = obstacle_velocity[0]
+        message.obstacle_velocity.y = obstacle_velocity[1]
+        message.obstacle_velocity.z = obstacle_velocity[2]
+        message.obstacle_radius = obstacle_radius
+        self.publisher.publish(message)
+        self.previous_invalid_reason = None
+
+        if state != self.previous_state:
+            self.get_logger().info(
+                f'{state}: clearance={result.clearance:.3f} m, '
+                f'segment={result.segment_name}'
+            )
+            self.previous_state = state
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    spin_node(ProximityMonitorNode())
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!--
+  Kinematic-only JACO instance for the offline hybrid campaign.
+
+  This model deliberately contains no Gazebo plugin and no ros2_control
+  system.  It is used only by arm_01's deterministic synthetic state source
+  so the fourth logical identity has TF without acquiring an actuator path.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="hybrid_jaco_synthetic">
+  <!-- robot_name is a launch/entity identity contract.  An argument declared
+       inside this element cannot safely be expanded in the element itself. -->
+  <xacro:arg name="robot_name" default="arm_01_jaco_synthetic"/>
+  <xacro:arg name="prefix" default="arm_01_jaco"/>
+  <xacro:arg name="root_name" default="arm_01_jaco_root"/>
+  <xacro:arg name="base_xyz" default="0 0 0"/>
+  <xacro:arg name="base_rpy" default="0 0 0"/>
+  <xacro:arg name="tool_mode" default="interface"/>
+
+  <xacro:include filename="$(find thesis_description)/urdf/j2n6s300.xacro"/>
+
+  <link name="world"/>
+  <link name="$(arg root_name)"/>
+  <joint name="$(arg prefix)_world_joint" type="fixed">
+    <parent link="world"/>
+    <child link="$(arg root_name)"/>
+    <origin xyz="$(arg base_xyz)" rpy="$(arg base_rpy)"/>
+  </joint>
+
+  <xacro:j2n6s300
+      base_parent="$(arg root_name)"
+      prefix="$(arg prefix)"
+      tool_mode="$(arg tool_mode)"/>
+</robot>
