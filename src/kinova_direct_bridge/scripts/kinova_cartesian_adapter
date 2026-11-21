@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Convert base-frame Cartesian jog requests to bounded joint velocities."""
+import math
+import time
+
+import rclpy
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Float64MultiArray
+
+from direct_kinematics.cartesian_kinematics import solve_inverse_kinematics_transform
+from direct_kinematics.jaco_kinematics import end_effector_transform
+from direct_kinematics.smoothing import ramp_vector
+from direct_kinematics.cartesian_motion import integrate_twist
+from direct_kinematics.joint_model import (
+    JOINT_NAMES, shortest_joint_delta,
+    validate_position_limits,
+)
+
+
+class Adapter(Node):
+    def __init__(self):
+        super().__init__('kinova_cartesian_adapter')
+        self.joints = None
+        self.joint_time = 0.0
+        self.enabled = False
+        self.linear = (0.0,) * 3
+        self.angular = (0.0,) * 3
+        self.last_speeds = (0.0,) * 6
+        self.last_update = None
+        self.pub = self.create_publisher(Float64MultiArray, 'kinova_direct/joint_velocity', 10)
+        self.create_subscription(JointState, 'joint_states', self.on_joints, 10)
+        self.create_subscription(Bool, 'kinova_direct/output_enabled', self.on_enabled, 10)
+        self.create_subscription(Twist, 'kinova_direct/cartesian_velocity', self.on_twist, 10)
+
+    def on_enabled(self, msg):
+        self.enabled = msg.data
+        if not self.enabled:
+            self.reset_ramp()
+
+    def on_joints(self, msg):
+        try:
+            positions = dict(zip(msg.name, msg.position))
+            self.joints = validate_position_limits(tuple(positions[n] for n in JOINT_NAMES))
+            self.joint_time = time.monotonic()
+        except (KeyError, ValueError, TypeError):
+            self.joints = None
+
+    def reset_ramp(self):
+        self.linear = (0.0,) * 3
+        self.angular = (0.0,) * 3
+        self.last_speeds = (0.0,) * 6
+        self.last_update = None
+
+    def stop(self):
+        self.reset_ramp()
+        msg = Float64MultiArray()
+        msg.data = [0.0] * 6
+        self.pub.publish(msg)
+
+    def on_twist(self, msg):
+        values = (msg.linear.x, msg.linear.y, msg.linear.z,
+                  msg.angular.x, msg.angular.y, msg.angular.z)
+        if not self.enabled:
+            return
+        if (not all(math.isfinite(x) for x in values)
+                or self.joints is None or time.monotonic() - self.joint_time > 0.25):
+            self.stop()
+            self.get_logger().warning('Cartesian command rejected: invalid or joint feedback stale')
+            return
+        if max(abs(x) for x in values) < 1e-9:
+            self.stop()
+            return
+        try:
+            # Coordinates are in the JACO model base frame, not SDK Cartesian axes.
+            now = time.monotonic()
+            dt = 0.05 if self.last_update is None else min(max(now - self.last_update, 0.0), 0.1)
+            self.linear = ramp_vector(self.linear, values[:3], 0.2, dt)
+            self.angular = ramp_vector(self.angular, values[3:], math.radians(60), dt)
+            self.last_update = now
+            duration = 0.1
+            target = integrate_twist(end_effector_transform(self.joints),
+                                     self.linear, self.angular, duration)
+            result = solve_inverse_kinematics_transform(
+                self.joints, target, position_tolerance_m=0.00005,
+                orientation_tolerance_rad=0.00005, maximum_iterations=60)
+            if not result.success:
+                raise ValueError(result.detail)
+            speeds = [shortest_joint_delta(name, end, start) / duration
+                      for name, start, end in zip(JOINT_NAMES, self.joints, result.positions)]
+            out = Float64MultiArray()
+            self.last_speeds = ramp_vector(self.last_speeds, speeds, 1.0, dt)
+            out.data = list(self.last_speeds)
+            self.pub.publish(out)
+        except (ValueError, ArithmeticError) as exc:
+            self.stop()
+            self.get_logger().warning('Cartesian IK rejected: ' + str(exc))
+
+
+def main():
+    rclpy.init()
+    node = Adapter()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

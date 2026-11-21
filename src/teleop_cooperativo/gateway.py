@@ -96,6 +96,9 @@ class CooperativeGateway:
         telemetry_source: Callable[[], TelemetrySample | None] | None = None,
         credentials: Mapping[str, tuple[str, ...]] | None = None,
         anonymous_lan: bool = False,
+        physical_session: bool = False,
+        wait_for_initial_ready: bool = False,
+        read_only: bool = False,
     ) -> None:
         if not isinstance(room_id, str) or not room_id.strip():
             raise ValueError("room_id must be a non-empty string")
@@ -121,8 +124,16 @@ class CooperativeGateway:
         self.twist_sink = twist_sink
         self.readiness_probe = readiness_probe
         self.telemetry_source = telemetry_source
+        if read_only and (not physical_session or twist_sink is not None or local_runtime is not None):
+            raise ValueError("read-only access requires a physical observation session without a command output")
+        self.read_only = read_only
+        # Read-only sessions still need to authenticate an administrator.  The
+        # read-only flag controls command output, not who may open the admin
+        # panel.
         self.credentials = credentials
         self.anonymous_lan = anonymous_lan
+        self.physical_session = physical_session
+        self.wait_for_initial_ready = wait_for_initial_ready
         self._connections: dict[str, str | None] = {}
         self._remote_control_allowed: dict[str, bool] = {}
         self._sessions: dict[str, _Session] = {}
@@ -154,6 +165,8 @@ class CooperativeGateway:
 
     def mark_ready(self) -> None:
         """Host-only readiness transition after its simulation/bridge check."""
+        if self.read_only:
+            raise RuntimeError("physical session is read-only")
         if self.readiness_probe is not None and not self.readiness_probe():
             raise RuntimeError("ROS bridge is not ready")
         if self.readiness_probe is not None and self.telemetry_source is not None and self._fresh_telemetry() is None:
@@ -193,6 +206,8 @@ class CooperativeGateway:
         if session_id is None:
             return self._finish_protocol(message_type, [self._error("hello_required", "send hello before requesting control")])
         role = self._sessions[session_id].role
+        if self.read_only and message_type in {"claim", "input", "release", "rearm", "stop_global"}:
+            return self._finish_protocol(message_type, [self._error("room_not_operational", "Sesión física de solo lectura")])
         if message_type in {"claim", "input", "release"} and role != "operator":
             return self._finish_protocol(message_type, [self._error("forbidden", "operator role required")])
         if message_type in {"stop_global", "rearm"} and role != "admin":
@@ -227,7 +242,8 @@ class CooperativeGateway:
                 self.arbiter.submit_input(session_id, sequence, values, tokens)
                 return self._finish_protocol(message_type, [{"type": "input_accepted", "sequence": sequence}])
             if message_type == "heartbeat":
-                self.arbiter.heartbeat(session_id)
+                if not self.read_only:
+                    self.arbiter.heartbeat(session_id)
                 return self._finish_protocol(message_type, [{"type": "heartbeat_ack"}])
             if message_type == "release":
                 axes = self._axes(message) if "axes" in message else None
@@ -255,7 +271,10 @@ class CooperativeGateway:
         runtime_tick: LocalSimulationTick | None = None
         simulator_advanced = False
         sample = self._fresh_telemetry() if self.telemetry_source is not None else None
-        if self.readiness_probe is not None and (not self.readiness_probe() or (self.telemetry_source is not None and sample is None)):
+        ready = self.readiness_probe is None or (self.readiness_probe() and (self.telemetry_source is None or sample is not None))
+        if self.wait_for_initial_ready and self.arbiter.state is RoomState.NOT_READY and ready:
+            self.mark_ready()
+        if self.readiness_probe is not None and not ready and not (self.wait_for_initial_ready and self.arbiter.state is RoomState.NOT_READY):
             if self.arbiter.state is not RoomState.FAULT:
                 self.fault()
             arbiter_tick = self.arbiter.tick()
@@ -387,12 +406,15 @@ class CooperativeGateway:
             "axes": axes,
             "modes": {
                 "operator": (
-                    self.arbiter.state in (RoomState.READY, RoomState.ACTIVE)
+                    (self.read_only or self.arbiter.state in (RoomState.READY, RoomState.ACTIVE))
                     and sum(s.role == "operator" for s in self._sessions.values()) < 2
                     and any(not axis["assigned"] for axis in axes.values())
                 ),
                 "observer": True,
-                "admin": not any(s.role == "admin" for s in self._sessions.values()),
+                "admin": (
+                    not any(s.role == "admin" for s in self._sessions.values())
+                    and (self.credentials is not None or not self.anonymous_lan)
+                ),
             },
         }
 
@@ -411,15 +433,25 @@ class CooperativeGateway:
             token = message.get("credential")
             available = self.credentials[{"operator": "operators", "observer": "observers", "admin": "admins"}[role]]
             valid = isinstance(token, str) and token.isascii() and any(hmac.compare_digest(token, item) for item in available)
-            anonymous = self.anonymous_lan and not token and self._remote_control_allowed[connection_id]
+            # A trusted laboratory LAN may use operator/observer without a
+            # login.  Administrative STOP/rearm remains private: it always
+            # needs the per-session administrator credential.
+            anonymous = (
+                self.anonymous_lan
+                and role in ("operator", "observer")
+                and not token
+                and self._remote_control_allowed[connection_id]
+            )
             if (not valid and not anonymous) or (role != "observer" and not self._remote_control_allowed[connection_id]):
                 return [self._error("authentication_failed", "invalid credentials, role or client origin")]
             fingerprint = hashlib.sha256(token.encode("ascii")).hexdigest() if valid else None
             if fingerprint and any(session.credential_fingerprint == fingerprint for session in self._sessions.values()):
                 return [self._error("authentication_failed", "credential is already in use")]
+        elif self.anonymous_lan and role == "admin":
+            return [self._error("authentication_failed", "administrator credential is required")]
         else:
             fingerprint = None
-        if self.anonymous_lan and (
+        if (self.anonymous_lan or self.read_only) and (
             (role == "operator" and not self.room_state()["modes"]["operator"])
             or (role == "admin" and not self.room_state()["modes"]["admin"])
         ):
@@ -446,6 +478,8 @@ class CooperativeGateway:
                 "session_id": session_id,
                 "operator_name": operator_name,
                 "role": role,
+                "physical_session": self.physical_session,
+                "read_only": self.read_only,
                 "state": self.arbiter.state.value,
                 "heartbeat_interval_ms": self.heartbeat_interval_ms,
             },
@@ -674,7 +708,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trusted-proxy", help="loopback address of the TLS proxy; it must overwrite X-Forwarded-For")
     parser.add_argument("--base-local-ip", action="append", default=[], help="IP assigned to this base, to exclude local operator/admin clients; repeat for each address")
     parser.add_argument("--insecure-development", action="store_true", help="disable authentication for local development only")
-    parser.add_argument("--anonymous-lan", action="store_true", help="allow remote LAN clients to choose a role without credentials (trusted LAN only)")
+    parser.add_argument("--anonymous-lan", action="store_true", help="allow remote LAN clients to use operator or observer without credentials (trusted LAN only); admin still requires its credential")
     parser.add_argument("--allow-local-web", action="store_true", help="permit the base computer to use the web UI through the trusted proxy for simulation tests")
     parser.add_argument(
         "--room-id",
@@ -707,6 +741,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "J2N6S300 simulation, while generic is retained only for tests"
         ),
     )
+    parser.add_argument("--direct-bridge", action="store_true",
+                        help="wait for the direct bridge readiness heartbeat")
+    parser.add_argument("--direct-mock-telemetry", action="store_true",
+                        help="label direct bridge telemetry as simulated hardware")
+    parser.add_argument(
+        "--physical-session", action="store_true",
+        help="mark the gateway as a physical robot session",
+    )
+    parser.add_argument(
+        "--physical-intent", action="store_true",
+        help="publish stamped intent for the supervised physical bridge",
+    )
+    parser.add_argument("--physical-source", choices=("mock", "physical"), default="physical",
+                        help="label telemetry source for the physical interface")
+    parser.add_argument("--read-only", action="store_true",
+                        help="observe the physical arm with no ROS command publisher")
     parser.add_argument(
         "--ros-ready-timeout-sec",
         type=float,
@@ -720,6 +770,9 @@ def main() -> int:
     """Start the standalone H3 gateway after explicitly marking it ready."""
     parser = build_argument_parser()
     arguments = parser.parse_args()
+    physical_session = arguments.physical_session or (arguments.physical_intent and arguments.physical_source == "physical")
+    if arguments.read_only and not physical_session:
+        parser.error("--read-only requires a real physical session")
     if not 1 <= arguments.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     if arguments.tick_ms <= 0:
@@ -734,6 +787,10 @@ def main() -> int:
         parser.error("--local-simulator is available only with --robot-model generic")
     if arguments.robot_model == "jaco2" and not arguments.ros_twist_topic:
         parser.error("--robot-model jaco2 requires --ros-twist-topic")
+    if arguments.physical_intent and (arguments.robot_model != "jaco2" or arguments.ros_twist_topic != "/teleop/physical_twist" or arguments.local_simulator):
+        parser.error("--physical-intent requires jaco2 and --ros-twist-topic /teleop/physical_twist without local simulation")
+    if physical_session and arguments.insecure_development:
+        parser.error("physical sessions cannot use insecure development mode")
     if arguments.insecure_development:
         if arguments.host not in ("127.0.0.1", "::1", "localhost") or arguments.ros_twist_topic:
             parser.error("--insecure-development requires loopback host and cannot connect to ROS")
@@ -743,8 +800,10 @@ def main() -> int:
     else:
         if arguments.host not in ("127.0.0.1", "::1", "localhost"):
             parser.error("secure gateway must bind loopback behind the TLS proxy")
-        if not arguments.credentials_file or not arguments.allowed_origin or arguments.trusted_proxy not in ("127.0.0.1", "::1") or not arguments.base_local_ip:
-            parser.error("secure mode requires --credentials-file, --allowed-origin, --base-local-ip and loopback --trusted-proxy")
+        if not arguments.credentials_file and not arguments.read_only and not arguments.anonymous_lan:
+            parser.error("secure control requires --credentials-file or --anonymous-lan")
+        if not arguments.allowed_origin or arguments.trusted_proxy not in ("127.0.0.1", "::1") or not arguments.base_local_ip:
+            parser.error("secure mode requires --allowed-origin, --base-local-ip and loopback --trusted-proxy")
         try:
             arguments.base_local_ip = [str(ipaddress.ip_address(address)) for address in arguments.base_local_ip]
         except ValueError:
@@ -752,7 +811,11 @@ def main() -> int:
         if any(not origin.startswith("https://") for origin in arguments.allowed_origin):
             parser.error("allowed origins must use https://")
         try:
-            credentials = load_credentials(arguments.credentials_file)
+            credentials = (
+                None
+                if arguments.anonymous_lan and not arguments.credentials_file
+                else load_credentials(arguments.credentials_file)
+            )
         except (OSError, ValueError, json.JSONDecodeError) as error:
             parser.error(f"invalid credentials file: {error}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -769,11 +832,13 @@ def main() -> int:
             ros_sink = RosTwistSink(
                 arguments.ros_twist_topic,
                 robot_model=arguments.robot_model,
+                telemetry_source=("ros_mock_jaco2_fk" if arguments.direct_mock_telemetry
+                                  else "ros_physical_jaco2_fk" if physical_session else None),
             )
         except (RuntimeError, ValueError) as error:
             logging.error("%s", error)
             return 2
-        if not ros_sink.wait_until_ready(arguments.ros_ready_timeout_sec):
+        if not physical_session and not arguments.direct_bridge and not ros_sink.wait_until_ready(arguments.ros_ready_timeout_sec):
             logging.error("ROS bridge did not report readiness before timeout")
             ros_sink.close()
             return 2
@@ -799,18 +864,23 @@ def main() -> int:
             telemetry_source=ros_sink.telemetry if ros_sink else None,
             credentials=credentials,
             anonymous_lan=arguments.anonymous_lan,
+            physical_session=physical_session,
         )
     else:
         gateway = CooperativeGateway(
             room_id=arguments.room_id,
             event_logger=event_logger,
-            twist_sink=ros_sink,
-            readiness_probe=ros_sink.ready if ros_sink else None,
+            twist_sink=None if arguments.read_only else ros_sink,
+            readiness_probe=ros_sink.ready if ros_sink and not arguments.read_only else None,
             telemetry_source=ros_sink.telemetry if ros_sink else None,
             credentials=credentials,
             anonymous_lan=arguments.anonymous_lan,
+            physical_session=physical_session,
+            read_only=arguments.read_only,
+            wait_for_initial_ready=arguments.direct_bridge,
         )
-    gateway.mark_ready()
+    if not arguments.read_only and not arguments.direct_bridge:
+        gateway.mark_ready()
     try:
         asyncio.run(
             serve_websocket(
@@ -818,7 +888,7 @@ def main() -> int:
                 host=arguments.host,
                 port=arguments.port,
                 tick_interval_sec=arguments.tick_ms / 1000.0,
-                allowed_origins=tuple(arguments.allowed_origin) if credentials is not None else None,
+                allowed_origins=tuple(arguments.allowed_origin) if not arguments.insecure_development else None,
                 trusted_proxy=arguments.trusted_proxy,
                 base_local_ips=tuple(arguments.base_local_ip),
                 allow_local_web=arguments.allow_local_web,

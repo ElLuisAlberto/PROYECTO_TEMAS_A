@@ -23,26 +23,10 @@ class RobotKinematics:
     telemetry_source: str
 
 
-def robot_kinematics(robot_model: str) -> RobotKinematics:
-    """Load the explicitly requested robot model without a silent fallback.
-
-    ``generic`` exists to retain the dependency-free substitute used by the
-    legacy test suite.  Production Gazebo runs select ``jaco2`` explicitly.
-    """
+def robot_kinematics(robot_model: str, telemetry_source: str | None = None) -> RobotKinematics:
+    """Load the JACO2 kinematic model without a silent fallback."""
     if robot_model == "generic":
-        from .differential_kinematics import (
-            JOINT_LIMITS,
-            JOINT_NAMES,
-            forward_kinematics,
-        )
-
-        return _validated_kinematics(
-            name="generic",
-            joint_names=JOINT_NAMES,
-            joint_limits=JOINT_LIMITS,
-            forward_kinematics=forward_kinematics,
-            telemetry_source="ros_gazebo_h2c_fk",
-        )
+        raise ValueError("generic ROS kinematics is not included; select jaco2")
     if robot_model == "jaco2":
         try:
             module = import_module(".jaco2_kinematics", __package__)
@@ -57,7 +41,7 @@ def robot_kinematics(robot_model: str) -> RobotKinematics:
             joint_names=getattr(module, "JOINT_NAMES", None),
             joint_limits=getattr(module, "JOINT_LIMITS", None),
             forward_kinematics=getattr(module, "forward_kinematics", None),
-            telemetry_source="ros_gazebo_jaco2_fk",
+            telemetry_source=telemetry_source or "ros_gazebo_jaco2_fk",
         )
     raise ValueError("robot_model must be 'jaco2' or 'generic'")
 
@@ -114,10 +98,11 @@ class RosTwistSink:
         topic: str = "/teleop/cartesian_twist",
         *,
         robot_model: str = "generic",
+        telemetry_source: str | None = None,
     ) -> None:
         if not isinstance(topic, str) or not topic.startswith("/"):
             raise ValueError("ROS twist topic must be an absolute non-empty name")
-        self._kinematics = robot_kinematics(robot_model)
+        self._kinematics = robot_kinematics(robot_model, telemetry_source=telemetry_source)
         try:
             import rclpy
             from geometry_msgs.msg import Twist as RosTwist
@@ -205,8 +190,14 @@ class RosTwistSink:
         age = time.monotonic() - self._joint_state_at
         if age > maximum_age_sec:
             return None
+        source = self._kinematics.telemetry_source
+        if getattr(self, "_physical_intent", False) or getattr(self, "_physical_session", False):
+            if getattr(self, "_physical_source", "physical") == "mock":
+                source = "ros_mock_jaco2_fk"
+            else:
+                source = "ros_physical_jaco2_fk"
         return TelemetrySample(
-            source=self._kinematics.telemetry_source,
+            source=source,
             pose=self._kinematics.forward_kinematics(self._joint_state),
             joint_positions=self._joint_state,
             age_sec=age,

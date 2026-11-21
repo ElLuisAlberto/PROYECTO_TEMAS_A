@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--ip", required=True)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--cert-dir", required=True)
+    parser.add_argument("--tls-only", action="store_true", help="prepare HTTPS without creating role credentials")
     args = parser.parse_args()
     ip = str(ipaddress.IPv4Address(args.ip))
     run_dir, cert_dir = Path(args.run_dir), Path(args.cert_dir)
@@ -67,6 +68,10 @@ def main():
     if (leaf / "server.key").stat().st_mode & 0o077:
         raise RuntimeError("Permisos inseguros en la clave privada del servidor")
     ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(leaf / "server.crt", leaf / "server.key")
+    print("CA:", ca / "ca.crt")
+    print("Certificado servidor:", leaf / "server.crt")
+    if args.tls_only:
+        return
     # x mode prevents clobbering a previous run's credentials.
     credentials = {role: [secrets.token_urlsafe(32) for _ in range(count)]
                    for role, count in (("operators", 2), ("observers", 3), ("admins", 1))}
@@ -74,8 +79,6 @@ def main():
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         json.dump(credentials, stream)
         stream.write("\n")
-    print("CA:", ca / "ca.crt")
-    print("Certificado servidor:", leaf / "server.crt")
     print("Credenciales privadas de esta sesión:", run_dir / "credentials.json")
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the base station for the cooperative teleoperation demo.
-# The simulated robot and ROS 2 stay on this computer; LAN clients use HTTPS.
+# The default session uses the direct bridge with simulated hardware.
 
 set -Eeuo pipefail
 
@@ -12,8 +12,6 @@ readonly HTTPS_PORT=8443
 readonly WEBSOCKET_PORT=8765
 readonly STARTUP_TIMEOUT_SEC=60
 readonly ROBOT_MODEL="jaco2"
-readonly JACO2_LAUNCH_FILE="$PROJECT_ROOT/ros2_ws/src/course_teleop_simulation/launch/jaco2_sim.launch.py"
-readonly JACO2_BRIDGE_FILE="$PROJECT_ROOT/scripts/jaco2_cartesian_ik_bridge.py"
 
 declare -a CHILD_NAMES=()
 declare -a CHILD_PIDS=()
@@ -21,7 +19,9 @@ LOG_DIR=""
 CERT_DIR=""
 CLEANUP_STARTED=0
 HEADLESS=0
+BACKEND=""
 ALLOW_LOCAL_WEB=0
+FORCE=0
 
 info() {
     printf '[base] %s\n' "$*"
@@ -38,25 +38,35 @@ die() {
 
 usage() {
     cat <<'EOF'
-Uso: bash scripts/start_base.sh [--headless] [--allow-local-web]
+Uso: bash scripts/start_base.sh [--direct-mock | --direct-usb] [--headless] [--allow-local-web] [--force]
 
-Inicia Gazebo Jaco2 sin GUI, puente IK, gateway, HTTPS/WSS y consola nativa.
+Por defecto usa el bridge directo con hardware simulado y salida desarmada.
 
 Opciones:
-  --headless  Ejecuta sin consola nativa; conserva los servicios LAN seguros.
-  --allow-local-web  Permite usar la web desde la madre para probar la simulación.
-  --help      Muestra esta ayuda.
+  --direct-mock      Usa hardware simulado (predeterminado).
+  --direct-usb       Conecta el Kinova físico; inicia con la salida desarmada.
+  --headless         Ejecuta sin consola nativa; conserva los servicios LAN.
+  --allow-local-web  Permite usar la interfaz web desde la computadora madre.
+  -f, --force        Termina procesos previos en los puertos de la estación.
+  --help             Muestra esta ayuda.
 EOF
 }
 
 parse_arguments() {
     while (($#)); do
         case "$1" in
+            --direct-mock|--direct-usb)
+                [[ -z "$BACKEND" || "$BACKEND" == "${1#--}" ]] || die "Seleccione un único backend."
+                BACKEND="${1#--}"
+                ;;
             --headless)
                 HEADLESS=1
                 ;;
             --allow-local-web)
                 ALLOW_LOCAL_WEB=1
+                ;;
+            -f|--force)
+                FORCE=1
                 ;;
             --help)
                 usage
@@ -70,6 +80,7 @@ parse_arguments() {
         esac
         shift
     done
+    BACKEND="${BACKEND:-direct-mock}"
 }
 
 require_command() {
@@ -85,7 +96,7 @@ port_is_listening() {
 require_free_port() {
     local port="$1"
     if port_is_listening "$port"; then
-        die "El puerto $port ya está en uso. No se modificó ni detuvo ningún proceso existente."
+        die "El puerto $port ya está en uso. Puedes usar --force para cerrar la sesión previa automáticamente, o ejecutar: fuser -k -9 ${port}/tcp"
     fi
 }
 
@@ -215,24 +226,6 @@ wait_for_port() {
     die "Tiempo de espera agotado esperando que $process_name atienda en el puerto $port. Revise $LOG_DIR/$process_name.log"
 }
 
-wait_for_clock_topic() {
-    local process_name="$1"
-    local deadline=$((SECONDS + STARTUP_TIMEOUT_SEC))
-    local pid
-    pid="$(child_pid_for "$process_name")"
-
-    while ((SECONDS < deadline)); do
-        # An existing ROS CLI daemon may have been started with different DDS
-        # isolation. Query this launch environment directly and bound discovery.
-        if timeout 5s ros2 topic list --no-daemon --spin-time 0.5 2>/dev/null | grep -Fxq '/clock'; then
-            return 0
-        fi
-        is_child_running "$pid" || report_child_failure "$process_name"
-        sleep 0.5
-    done
-    die "Tiempo de espera agotado esperando /clock de Gazebo. Revise $LOG_DIR/$process_name.log"
-}
-
 default_route_lan_ipv4() {
     local route interface
     route="$(ip -4 route get 1.1.1.1 2>/dev/null || true)"
@@ -254,7 +247,7 @@ default_route_lan_ipv4() {
 }
 
 main() {
-    local lan_url credentials_file
+    local lan_url credentials_file session_mode=simulation
     local base_ip
     local -a local_ip_args=()
     local -a local_web_args=()
@@ -264,9 +257,6 @@ main() {
 
     [[ -f "$ROS_SETUP" ]] || die "No existe ROS 2 Humble en $ROS_SETUP"
     [[ -f "$WORKSPACE_SETUP" ]] || die "No existe el workspace instalado en $WORKSPACE_SETUP. Compile ros2_ws antes de iniciar la estación base."
-    [[ -f "$JACO2_LAUNCH_FILE" ]] || die "No existe el launch de simulación Jaco2: $JACO2_LAUNCH_FILE"
-    [[ -f "$JACO2_BRIDGE_FILE" ]] || die "No existe el puente cartesiano Jaco2: $JACO2_BRIDGE_FILE"
-
     # ROS 2 Humble setup scripts read optional variables that may be unset.
     # Keep strict mode for this launcher, but temporarily allow that upstream
     # convention while loading their environment.
@@ -276,15 +266,29 @@ main() {
     # shellcheck disable=SC1091
     source "$WORKSPACE_SETUP"
     set -u
+    if [[ "$BACKEND" == direct-mock || "$BACKEND" == direct-usb ]]; then
+        [[ -f "$PROJECT_ROOT/src/kinova_direct_bridge/.work/install/setup.bash" ]] || die "Compile el paquete kinova_direct_bridge con colcon antes de iniciar."
+        set +u
+        source "$PROJECT_ROOT/src/kinova_direct_bridge/.work/install/setup.bash"
+        set -u
+    fi
     export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
     export ROS_LOCALHOST_ONLY=1
     umask 077
 
+    if [[ "$BACKEND" == direct-mock ]]; then
+        export ROS_DOMAIN_ID="${TEMAS_A_MOCK_DOMAIN:-82}"
+    fi
+    if [[ "$BACKEND" == direct-mock ]]; then
+        [[ "${ROS_DOMAIN_ID:-0}" != "${TEMAS_A_USB_DOMAIN:-83}" ]] ||
+            die "La simulación requiere un dominio ROS distinto al del brazo físico."
+    fi
     if (( ! HEADLESS )); then
+        export DISPLAY="${DISPLAY:-:1}"
+        export XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"
         [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] || die "La consola necesita una sesión gráfica local. Use --headless si no hay pantalla."
     fi
     require_command ros2
-    require_command ign
     require_command ss
     require_command ip
     require_command setsid
@@ -306,6 +310,15 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
         die "Se requiere websockets>=12,<16 para el gateway."
     fi
 
+    if (( FORCE )); then
+        info "Liberando puertos $HTTPS_PORT y $WEBSOCKET_PORT de procesos previos (--force)..."
+        fuser -k -9 "${HTTPS_PORT}/tcp" 2>/dev/null || true
+        fuser -k -9 "${WEBSOCKET_PORT}/tcp" 2>/dev/null || true
+        pkill -9 -f "teleop_cooperativo" 2>/dev/null || true
+        pkill -9 -f "lan_https_proxy" 2>/dev/null || true
+        sleep 1
+    fi
+
     require_free_port "$HTTPS_PORT"
     require_free_port "$WEBSOCKET_PORT"
     default_route_lan_ipv4
@@ -318,7 +331,8 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
     CERT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/teleop-jaco2"
     mkdir -p -m 700 "$CERT_DIR"
     credentials_file="$LOG_DIR/credentials.json"
-    python3 "$SCRIPT_DIR/prepare_lan_security.py" --ip "$LAN_IPV4" --run-dir "$LOG_DIR" --cert-dir "$CERT_DIR" || die "No se pudo preparar la CA, el certificado o las credenciales. No se sobrescribieron configuraciones previas."
+    local -a security_args=() credential_args=(--credentials-file "$credentials_file")
+    python3 "$SCRIPT_DIR/prepare_lan_security.py" --ip "$LAN_IPV4" --run-dir "$LOG_DIR" --cert-dir "$CERT_DIR" "${security_args[@]}" || die "No se pudo preparar la seguridad de la estación."
     info "Raíz del proyecto: $PROJECT_ROOT"
     if (( HEADLESS )); then
         info "Modo headless: no se abrirá la consola local."
@@ -327,17 +341,30 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
     fi
     info "IPv4 LAN detectada por la ruta por defecto: $LAN_IPV4"
 
-    start_process jaco2_gazebo \
-        ros2 launch course_teleop_simulation jaco2_sim.launch.py "headless:=true"
-    wait_for_clock_topic jaco2_gazebo
-
-    start_process jaco2_cartesian_ik_bridge python3 "$JACO2_BRIDGE_FILE"
+    local -a transport_args=(--ros-twist-topic /teleop/cartesian_twist)
+    local -a auth_args=(--anonymous-lan)
+    local direct_mock=true
+    transport_args+=(--direct-bridge)
+    if [[ "$BACKEND" == direct-usb ]]; then
+        export ROS_DOMAIN_ID="${TEMAS_A_USB_DOMAIN:-83}"
+        direct_mock=false
+        session_mode=physical
+        transport_args+=(--physical-session)
+    else
+        transport_args+=(--direct-mock-telemetry)
+    fi
+    start_process direct_bridge ros2 launch kinova_direct_bridge direct.launch.py "mock_hardware:=$direct_mock"
+    start_process direct_web_relay python3 "$SCRIPT_DIR/direct_web_relay.py"
+    info "Bridge directo iniciado desarmado. Use el botón de la consola local para armar o desarmar."
+    if (( HEADLESS )); then
+        info "Sin consola: arme localmente mediante /kinova_direct/enable_output en ROS_DOMAIN_ID=$ROS_DOMAIN_ID."
+    fi
     start_process gateway \
         python3 -m teleop_cooperativo.gateway \
         --host 127.0.0.1 \
         --port "$WEBSOCKET_PORT" \
-        --credentials-file "$credentials_file" \
-        --anonymous-lan \
+        "${credential_args[@]}" \
+        "${auth_args[@]}" \
         "${local_web_args[@]}" \
         --allowed-origin "https://$LAN_IPV4:$HTTPS_PORT" \
         --trusted-proxy 127.0.0.1 \
@@ -345,10 +372,11 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
         --event-log "$LOG_DIR/events.jsonl" \
         --run-id "$(basename -- "$LOG_DIR")" \
         --robot-model "$ROBOT_MODEL" \
-        --ros-twist-topic /teleop/cartesian_twist \
+        "${transport_args[@]}" \
         --ros-ready-timeout-sec "$STARTUP_TIMEOUT_SEC"
     start_process https_proxy \
         python3 "$SCRIPT_DIR/lan_https_proxy.py" --host "$LAN_IPV4" --port "$HTTPS_PORT" \
+        --session-mode "$session_mode" \
         --backend-port "$WEBSOCKET_PORT" --directory "$PROJECT_ROOT/web" \
         --cert "$CERT_DIR/server-$LAN_IPV4/server.crt" --key "$CERT_DIR/server-$LAN_IPV4/server.key"
 
@@ -356,28 +384,35 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
     wait_for_port "$HTTPS_PORT" https_proxy
 
     if (( ! HEADLESS )); then
+        local -a console_args=()
+        if [[ "$BACKEND" == direct-mock || "$BACKEND" == direct-usb ]]; then console_args+=(--direct-bridge); fi
         start_process desktop_console \
-            env -u GTK_PATH -u GTK_EXE_PREFIX -u GIO_MODULE_DIR \
-            -u GTK_IM_MODULE_FILE -u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR \
-            -u GSETTINGS_SCHEMA_DIR -u LOCPATH \
+            env -i HOME="$HOME" USER="$USER" \
+            PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            DISPLAY="${DISPLAY:-:1}" \
+            XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}" \
+            PYTHONPATH="$PYTHONPATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+            AMENT_PREFIX_PATH="${AMENT_PREFIX_PATH:-}" ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" ROS_LOCALHOST_ONLY=1 \
             python3 -m teleop_cooperativo.desktop_console \
             --server-url "ws://127.0.0.1:$WEBSOCKET_PORT/ws" \
-            --credentials-file "$credentials_file" \
-            --room-id default
+            "${credential_args[@]}" \
+            --room-id default "${console_args[@]}"
     fi
 
     lan_url="https://$LAN_IPV4:$HTTPS_PORT"
+    if [[ "$BACKEND" == direct-usb ]]; then lan_url="$lan_url/?hardware=1"; fi
     info "Interfaz para las otras computadoras: $lan_url"
     if (( ALLOW_LOCAL_WEB )); then
-        info "Prueba local habilitada: esta computadora también puede abrir $lan_url y operar la simulación."
+        info "Prueba local habilitada: esta computadora también puede abrir $lan_url y acceder a la sesión."
     fi
     info "Instale la CA pública $CERT_DIR/ca/ca.crt como confiable en cada equipo remoto."
-    info "Acceso web sin claves: use solo una LAN de confianza; cualquier equipo remoto puede elegir un modo disponible."
-    info "No comparta la clave privada de la CA ni el archivo de credenciales internas."
+    info "Acceso web: observador y operador son libres en la LAN; administrador requiere su credencial privada."
+    info "La credencial de administrador está en $credentials_file (archivo privado, modo 0600)."
+    info "Conserve la clave privada de la CA en esta computadora."
     if (( HEADLESS )); then
         info "Modo headless listo: use el enlace LAN desde un navegador remoto."
     else
-        info "Gazebo funciona sin GUI; consola nativa iniciada en la computadora base."
+        info "Consola nativa iniciada en la computadora base."
         info "Interfaz web de operadores y observadores: $lan_url"
     fi
 

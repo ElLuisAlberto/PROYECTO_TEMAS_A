@@ -1,184 +1,65 @@
-# Fase 1 — Teleoperación cartesiana cooperativa simulada
+# JACO2 · Teleoperación cooperativa
 
-## Propósito
+Dos operadores pueden mover un mismo brazo **Kinova JACO2 (J2N6S300)** desde sus navegadores. Se reparten los seis ejes cartesianos y eligen la velocidad de cada uno. La **interfaz madre** conecta el brazo por USB, reconstruye su postura en 3D a partir de las articulaciones medidas y muestra la misma telemetría que recibe la web. También se puede practicar con un brazo simulado.
 
-Este directorio contiene el planeamiento, la futura implementación, los
-experimentos y la evidencia del proyecto de curso. La fase 1 estudia cómo
-varios operadores web controlan cooperativamente la pose cartesiana de un
-Jaco2 simulado cuando la red tiene latencia, jitter, pérdida o desconexiones.
+## Arranque en dos pasos
 
-Cada operador puede reservar hasta tres de las seis componentes:
+### 1. Iniciar la interfaz madre
 
-~~~
-X, Y, Z, roll, pitch, yaw
-~~~
+En la computadora conectada al Kinova, abre una terminal en la carpeta que contiene este README y ejecuta lo siguiente. Si es la primera instalación, consulta la preparación al final de la guía.
 
-La laptop madre fusiona las intenciones y es la única autoridad que envía
-comandos al simulador.
+```bash
+bash scripts/start_base.sh --direct-usb --allow-local-web
+```
 
-## Regla de aislamiento
+El comando abre la consola y sirve la web por HTTPS. **La salida física comienza desarmada.** Los botones **Armar salida** y **Desarmar salida** están en la consola madre. Para practicar sin conectar el brazo, sustituye `--direct-usb` por `--direct-mock`.
 
-IMPLEMENTACION_ROS2_CORE es solo referencia técnica. Este proyecto no añadirá,
-editará, moverá ni eliminará archivos dentro de esa carpeta, ni dependerá de
-modificarla para funcionar. La implementación será autosuficiente dentro de
-este directorio.
+### 2. Abrir la web
 
-## Alcance de la fase 1
+Copia la URL que aparece junto a **Interfaz para las otras computadoras** en la terminal de la madre. Pégala en el navegador de cualquier equipo de la misma red local. En Linux también puedes abrirla desde una segunda terminal con este comando.
 
-- Simulación del manipulador y teleoperación cooperativa por red local.
-- Página web para operadores, anfitrión y observadores.
-- Asignación exclusiva de componentes, con máximo de tres por sesión.
-- Fusión de velocidades, límites, parada global y liberación por pérdida de
-  conectividad.
-- Tarea de posicionamiento cooperativo y, después, pick-and-place con agarre
-  virtual.
-- Métricas reproducibles de red, coordinación, control y éxito de tarea.
+```bash
+read -r -p 'Pega la URL HTTPS de la estación: ' url && xdg-open "$url"
+```
 
-## Fuera de alcance
+La primera vez, instala como autoridad de confianza el certificado público `ca.crt` cuya ruta indica el lanzador. Mantén abierta la terminal del primer paso durante la sesión. Pulsa **Ctrl+C** allí para cerrar la estación y sus servicios.
 
-- Movimiento del Jaco2 físico, salida USB o habilitación de hardware.
-- Gripper físico, URDF físico o fabricación mecánica.
-- Acceso de navegadores a ROS 2, controladores o articulaciones.
-- Control por joints o poses absolutas de varios usuarios.
+## Qué puede hacer cada usuario
 
-## Estructura
+| Interfaz | Controles |
+| --- | --- |
+| **Madre** · escritorio | Visualiza el brazo en 3D, supervisa la telemetría y las reservas, y arma o desarma la salida física. |
+| **Operador** · web | Reserva de 1 a 3 ejes disponibles entre X, Y, Z, roll, pitch y yaw. Ajusta la velocidad de cada eje y mantiene pulsado **+** o **−** para moverlo. |
+| **Observador** · web | Consulta la posición, orientación, articulaciones y reservas de los operadores en tiempo real. |
+| **Administrador** · web | Usa **STOP** para detener el movimiento y liberar las reservas. Puede rearmar la sala. Accede con la credencial privada de sesión cuya ruta imprime el lanzador. |
 
-~~~
-docs/          contratos, arquitectura, hoja de ruta y pruebas
-experiments/   perfiles de red y hojas de ejecución
-evidence/      capturas, videos, logs, figuras y resultados
-ros2_ws/       descripción y simulación ROS 2/Gazebo propias
-scripts/       construcción, validación y demostraciones reproducibles
-simulation/    estado, procedencia y guía del gemelo digital
-src/           futura implementación independiente del curso
-web/           cliente estático para operadores web
-~~~
+<details>
+<summary><strong>Preparar la estación por primera vez</strong></summary>
 
-## Documentos
+La madre requiere Linux x86_64 con sesión gráfica, ROS 2 Humble en `/opt/ros/humble`, `colcon`, CMake, un compilador C++17 y OpenSSL. Instala PyQt5, VTK, NumPy, pycollada y `websockets>=12,<16` para el Python 3 de la estación. Los clientes web solo necesitan un navegador y acceso HTTPS a la madre por el puerto `8443`.
 
-1. [Alcance y requisitos](docs/01_alcance_y_requisitos.md)
-2. [Arquitectura y protocolo](docs/02_arquitectura_y_protocolo.md)
-3. [Hoja de ruta modular](docs/03_hoja_de_ruta.md)
-4. [Pruebas y métricas](docs/04_pruebas_y_metricas.md)
-5. [Bitácora de decisiones](docs/05_bitacora_de_decisiones.md)
-6. [Entorno y dependencias](docs/06_entorno_y_dependencias.md)
-7. [Gateway y web H3](docs/07_gateway_y_web_h3.md)
-8. [Estación base y conexión LAN segura](docs/08_estacion_base_y_lan_segura.md)
+El bridge enlaza el **SDK USB de Kinova** tanto en modo físico como en simulación. Ajusta `KINOVA_ROOT` al directorio externo del driver que contiene `include/kinova/` y `lib/x86_64-linux-gnu/`. Desde la raíz del repositorio, compila los dos paquetes que carga el lanzador.
 
-Ningún hito se considera terminado sin su prueba, registro de evidencia y
-actualización de la bitácora.
+```bash
+export KINOVA_ROOT="/ruta/al/kinova_driver"
+source /opt/ros/humble/setup.bash
+(cd ros2_ws && colcon build --packages-select course_teleop_description)
+(cd src/kinova_direct_bridge && colcon --log-base .work/log build \
+  --base-paths . --build-base .work/build --install-base .work/install \
+  --packages-select kinova_direct_bridge)
+```
 
-## Estado actual
+Conserva `KINOVA_ROOT` en el entorno desde el que arrancas la madre para que el bridge encuentre las bibliotecas del SDK.
 
-- H1: dominio, leases y composición terminados.
-- H2a: árbitro local terminado.
-- H2b: arnés cartesiano determinista terminado.
-- H2c: sustituto articulado de seis GDL validado en Gazebo Fortress.
-- H2d: gemelo visual/cinemático Kinova JACO2 J2N6S300 integrado en Gazebo Sim,
-  con control cartesiano, controladores activos y procedencia BSD-3-Clause.
-- H3: gateway, interfaz, arnés cartesiano local, telemetría y registro JSONL
-  implementados y probados de forma automatizada. Falta el ensayo LAN con dos
-  navegadores y su evidencia.
-- Puente cartesiano/IK para el sustituto de seis GDL validado en una máquina:
-  WebSocket → ROS → IK → Gazebo, parada segura y pérdida del puente. La hoja
-  del ensayo con evidencia persistente está en
-  `experiments/run_sheets/h3_h2c_single_host_006.md`.
-- La telemetría real del Jaco2 en Gazebo (pose por FK, articulaciones, twist,
-  fuente y antigüedad) se publica en tiempo real hacia la consola nativa de la
-  base y los clientes web.
-- La consola nativa Qt/VTK es de solo observación, ocupa la pantalla y
-  reconstruye el brazo a partir de la telemetría. La conexión LAN usa TLS;
-  la página remota permite elegir un modo sin contraseña. La validación en
-  dos equipos físicos sigue pendiente.
+</details>
 
-## Arranque integrado de la computadora base
+## Dónde está el código
 
-La computadora base es la única que ejecuta ROS 2, Gazebo, el puente IK, el
-gateway WebSocket y el servidor web. Para iniciar la sesión cooperativa con el
-gemelo Jaco2 J2N6S300, desde este directorio se usa un único comando:
+| Componente | Punto de entrada |
+| --- | --- |
+| Arranque de la estación | [scripts/start_base.sh](scripts/start_base.sh) |
+| Interfaz madre y vista 3D | [Consola](src/teleop_cooperativo/desktop_console.py) · [Vista Qt/VTK](src/teleop_cooperativo/desktop_qt.py) |
+| Interfaz web | [Página](web/index.html) · [Controles](web/app.js) · [Estilos](web/styles.css) |
+| Comunicación con el brazo | [Gateway de teleoperación](src/teleop_cooperativo/gateway.py) · [Bridge USB para ROS 2](src/kinova_direct_bridge/) |
 
-~~~bash
-bash scripts/start_base.sh
-~~~
-
-El iniciador carga ROS 2 e inicia Gazebo sin interfaz, los controladores, el
-puente IK, el gateway, el servidor HTTPS y la consola nativa a pantalla
-completa. La consola reconstruye la postura del brazo con las articulaciones
-observadas; no es video de Gazebo ni muestra toda la escena. La velocidad
-mostrada corresponde al comando, no a una medición de velocidad.
-
-La vista utiliza los materiales de las mallas DAE, incluye anillos y dedos en
-una postura fija, y muestra una mesa que corresponde al mundo físico Jaco2 de
-Gazebo (`jaco2_lab.sdf`). La cámara puede restablecerse desde el visor. El
-laboratorio del sustituto H2c conserva su mundo anterior.
-
-La consola recibe el estado público del gateway y no reclama componentes ni
-accede directamente a ROS. Al inicio también se detecta e imprime la IP de la
-red local. Por ejemplo, si la base indica `192.168.1.10`, los operadores y
-observadores de la misma LAN deben abrir en su navegador:
-
-~~~text
-https://192.168.1.10:8443
-~~~
-
-Los clientes LAN usan exclusivamente el navegador: no necesitan ROS, Gazebo ni
-el puente IK. Primero deben confiar en la CA pública de laboratorio cuya ruta
-imprime el iniciador. Al abrir la página eligen el modo operador, observador o
-administrador y pueden ver si está disponible. Para elegir un modo, pulse su
-tarjeta una vez y confírmela con un segundo clic o con «Confirmar modo». El
-operador selecciona hasta tres ejes libres antes de ingresar a sus controles;
-el servidor puede rechazar la reserva si otro operador ocupó un eje antes.
-
-La página no solicita claves ni autentica la identidad de los usuarios: cualquier
-equipo remoto que pueda acceder desde la LAN puede ocupar un modo disponible,
-incluido administrador. Use exclusivamente una red de laboratorio confiable y
-no exponga el servicio a Internet. HTTPS/WSS cifra el tráfico, pero por sí solo
-no identifica ni autoriza a los participantes. La consola madre solo observa;
-STOP y rearme corresponden al administrador remoto y no son un paro físico.
-
-El brazo visualizado es el Kinova JACO2 **J2N6S300**: seis articulaciones,
-muñeca no esférica y mano de tres dedos. Sus mallas, límites e inercias derivan
-de la descripción publicada por Kinova; se registra revisión y licencia en
-`ros2_ws/src/course_teleop_description/third_party/kinova_j2n6s300/IMPORT.md`.
-Para mantener el gemelo interactivo en tiempo real, Gazebo usa envolventes de
-colisión primitivas; la geometría visual sigue siendo la malla oficial.
-
-Para ejecutar la simulación sin interfaz gráfica, por ejemplo en validaciones
-automáticas o en una máquina sin pantalla, usar el modo headless opcional del
-iniciador:
-
-~~~bash
-bash scripts/start_base.sh --headless
-~~~
-
-En ese modo no se abre la ventana de Gazebo ni la consola nativa; los clientes
-LAN pueden seguir entrando mediante la URL que el iniciador imprime.
-
-## Ejecución local del arnés determinista
-
-Para una prueba de desarrollo aislada, instalar las dependencias indicadas en
-`requirements.txt` y cargar el entorno de ROS cuando corresponda:
-
-~~~bash
-python3 -m pip install --user -r requirements.txt
-~~~
-
-En una terminal, iniciar la autoridad WebSocket:
-
-~~~bash
-PYTHONPATH=src python3 -m teleop_cooperativo.gateway --host 127.0.0.1 --local-simulator --insecure-development
-~~~
-
-El modo de desarrollo es solo local, sin autenticación y sin conexión ROS;
-no debe usarse para la sesión LAN. Usa el arnés determinista, que no representa
-el Jaco2 en Gazebo. Para la sesión segura use el arranque integrado.
-
-Para conservar un log JSONL no sobrescribible de una corrida local, añadir:
-
-~~~bash
---event-log evidence/logs/h3-local-001.jsonl --run-id h3-local-001
-~~~
-
-al comando del gateway. La telemetría de pose y twist que muestra la web
-corresponde al arnés cartesiano determinista, no al modelo Gazebo ni a un
-Jaco2 físico.
+El proyecto se distribuye bajo la [licencia Apache 2.0](LICENSE). El componente USB de Kinova tiene su [propia licencia](licenses/kinova-usb-LICENSE).

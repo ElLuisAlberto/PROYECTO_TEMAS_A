@@ -1,8 +1,7 @@
 """Native monitoring console for the base-station computer.
 
-The console is deliberately an observer of the public WebSocket protocol.  It
-does not claim axes and it never talks to ROS or Gazebo directly, so the
-gateway remains the single source of truth for control and telemetry.
+The console observes the gateway without claiming axes. When explicitly
+configured for the direct bridge, it also provides a local ROS output switch.
 """
 
 from __future__ import annotations
@@ -52,6 +51,7 @@ class DesktopSnapshot:
     joint_positions: tuple[float, ...] | None = None
     updated_monotonic: float | None = None
     events: tuple[str, ...] = ()
+    reserved_count: int | None = None
 
 
 class DesktopState:
@@ -67,6 +67,7 @@ class DesktopState:
         self._connected = False
         self._connection_label = "Desconectado"
         self._room_state = "—"
+        self._reserved_count: int | None = None
         self._revision = 0
         self._owners = {axis: "Disponible" for axis in AXIS_NAMES}
         self._telemetry_source = "Sin telemetría"
@@ -86,6 +87,7 @@ class DesktopState:
             self._connection_label = str(label)
             if not connected:
                 self._clear_observation_locked()
+                self._reserved_count = None
                 self._room_state = "—"
                 self._owners = {axis: "Desconocido" for axis in AXIS_NAMES}
             if changed:
@@ -135,6 +137,7 @@ class DesktopState:
                 room_state=self._room_state,
                 revision=self._revision,
                 owners=dict(self._owners),
+                reserved_count=self._reserved_count,
                 telemetry_source=self._telemetry_source,
                 telemetry_age_sec=self._telemetry_age_sec,
                 position=self._position,
@@ -154,6 +157,9 @@ class DesktopState:
         axes = message.get("axes")
         if not isinstance(axes, Mapping):
             return
+        self._reserved_count = None
+        if all(isinstance(axes.get(axis), Mapping) and isinstance(axes[axis].get("assigned"), bool) for axis in AXIS_NAMES):
+            self._reserved_count = sum(axes[axis]["assigned"] for axis in AXIS_NAMES)
         for axis in AXIS_NAMES:
             item = axes.get(axis)
             if not isinstance(item, Mapping) or item.get("assigned") is not True:
@@ -190,10 +196,10 @@ class DesktopState:
         joints = _finite_vector(message.get("joint_positions"), 6)
         age = message.get("pose_age_sec", message.get("age_sec"))
         valid_age = isinstance(age, (int, float)) and not isinstance(age, bool) and math.isfinite(age) and age >= 0
-        if message.get("source") == "ros_gazebo_jaco2_fk" and (position is None or quaternion is None or joints is None or not valid_age):
-            self._clear_observation_locked()
-            return
-        if message.get("source") == "ros_gazebo_jaco2_fk":
+        if message.get("source") in ("ros_gazebo_jaco2_fk", "ros_mock_jaco2_fk", "ros_physical_jaco2_fk"):
+            if position is None or quaternion is None or joints is None or not valid_age:
+                self._clear_observation_locked()
+                return
             from .jaco2_kinematics import _validated_joints
             try:
                 _validated_joints(joints)
@@ -330,9 +336,9 @@ class GatewayObserver:
 class DesktopConsole:
     """Lazy Qt frontend, keeping the state reducer usable without GUI libraries."""
 
-    def __new__(cls, state: DesktopState, observer: GatewayObserver):
+    def __new__(cls, state: DesktopState, observer: GatewayObserver, direct_bridge: bool = False):
         from .desktop_qt import QtDesktopConsole
-        return QtDesktopConsole(state, observer)
+        return QtDesktopConsole(state, observer, direct_bridge=direct_bridge)
 
     @staticmethod
     def _format_vector(value: tuple[float, ...] | None) -> str:
@@ -343,6 +349,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Consola nativa de la estación base")
     parser.add_argument("--server-url", default="ws://127.0.0.1:8765/ws")
     parser.add_argument("--room-id", default="default")
+    parser.add_argument("--direct-bridge", action="store_true", help="control local de salida del bridge directo")
     parser.add_argument("--alias", default="Consola base")
     parser.add_argument("--credentials-file", type=Path, help="JSON local con credencial de observador")
     return parser
@@ -369,7 +376,7 @@ def main() -> int:
         credential=credential,
     )
     try:
-        console = DesktopConsole(state, observer)
+        console = DesktopConsole(state, observer, direct_bridge=arguments.direct_bridge)
     except (ImportError, RuntimeError, OSError, ValueError) as error:
         print(f"No se pudo iniciar la interfaz nativa: {error}")
         return 2

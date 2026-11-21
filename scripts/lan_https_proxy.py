@@ -9,6 +9,7 @@ processes remain part of the trusted boundary.
 from __future__ import annotations
 
 import argparse
+import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import select
 import socket
@@ -20,10 +21,11 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, address, handler, *, directory, backend_port, max_clients):
+    def __init__(self, address, handler, *, directory, backend_port, max_clients, session_mode="simulation"):
         super().__init__(address, handler)
         self.directory = directory
         self.backend_port = backend_port
+        self.session_mode = session_mode
         self.slots = threading.BoundedSemaphore(max_clients)
 
     def process_request(self, request, client_address):
@@ -64,6 +66,14 @@ class Handler(SimpleHTTPRequestHandler):
             self._websocket()
         elif self.headers.get("Upgrade"):
             self.send_error(404)
+        elif self.path == "/session-mode":
+            body = json.dumps({"mode": self.server.session_mode}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             super().do_GET()
 
@@ -132,11 +142,12 @@ def main():
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
     parser.add_argument("--max-clients", type=int, default=32)
+    parser.add_argument("--session-mode", choices=("simulation", "physical", "read-only"), default="simulation")
     args = parser.parse_args()
     if args.max_clients < 1:
         parser.error("max-clients must be positive")
     server = BoundedHTTPServer((args.host, args.port), Handler, directory=args.directory,
-                               backend_port=args.backend_port, max_clients=args.max_clients)
+                               backend_port=args.backend_port, max_clients=args.max_clients, session_mode=args.session_mode)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(args.cert, args.key)
