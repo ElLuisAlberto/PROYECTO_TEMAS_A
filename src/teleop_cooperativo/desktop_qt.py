@@ -22,7 +22,7 @@ from .virtual_task_spec import OBJECTS, INITIAL, GOALS, GOAL_HEIGHTS, _parts
 
 MESH_DIR = (Path(__file__).resolve().parents[2] / "ros2_ws/src/course_teleop_description"
             / "meshes/kinova_j2n6s300")
-LAB_WORLD = Path(__file__).resolve().parents[2] / "ros2_ws/src/thesis_simulation/worlds/jaco2_workstation.sdf"
+LAB_WORLD = Path(__file__).resolve().parents[2] / "assets/jaco2_workstation.sdf"
 WINDOW_PHOTO = Path(__file__).resolve().parents[2] / "assets/ventana_pucp.jpeg"
 MESHES = ("base", "shoulder", "arm", "forearm", "wrist", "wrist", "hand_3finger")
 STALE_SEC = 1.0

@@ -1,6 +1,0 @@
-<?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="jaco_synthetic_gripper_view">
-  <xacro:include filename="$(find thesis_description)/urdf/j2n6s300.xacro"/>
-  <link name="world"/>
-  <xacro:j2n6s300 base_parent="world" prefix="j2n6s300" tool_mode="synthetic_gripper"/>
-</robot>
