@@ -117,13 +117,17 @@ class Handler(SimpleHTTPRequestHandler):
             self.close_connection = True
 
     def _relay(self, upstream):
-        upstream.settimeout(5)
-        self.connection.settimeout(5)
+        for sock in (upstream, self.connection):
+            sock.settimeout(5)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
         peers = (self.connection, upstream)
         while True:
             # SSLSocket may already have decrypted bytes buffered internally.
             pending = self.connection.pending()
-            readable, _, _ = select.select(peers, (), (), 1)
+            readable, _, _ = select.select(peers, (), (), 0 if pending else 1)
             if pending and self.connection not in readable:
                 readable.append(self.connection)
             for source in readable:

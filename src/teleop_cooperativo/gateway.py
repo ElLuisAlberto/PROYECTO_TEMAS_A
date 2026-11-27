@@ -277,7 +277,29 @@ class CooperativeGateway:
             if message_type == "heartbeat":
                 if not self.read_only:
                     self.arbiter.heartbeat(session_id)
-                return self._finish_protocol(message_type, [{"type": "heartbeat_ack"}])
+                ack: dict[str, object] = {"type": "heartbeat_ack"}
+                client_sent_ms = message.get("client_sent_ms")
+                if (
+                    isinstance(client_sent_ms, (int, float))
+                    and not isinstance(client_sent_ms, bool)
+                    and math.isfinite(client_sent_ms)
+                ):
+                    ack["client_sent_ms"] = client_sent_ms
+                extra: dict[str, object] | None = None
+                raw_rtt = message.get("rtt_ms")
+                if (
+                    isinstance(raw_rtt, (int, float))
+                    and not isinstance(raw_rtt, bool)
+                    and math.isfinite(raw_rtt)
+                    and 0.0 <= float(raw_rtt) <= 60000.0
+                ):
+                    session = self._sessions.get(session_id)
+                    extra = {
+                        "rtt_ms": round(float(raw_rtt), 3),
+                        "role": session.role if session else None,
+                        "operator_name": session.operator_name if session else None,
+                    }
+                return self._finish_protocol(message_type, [ack], extra_payload=extra)
             if message_type == "release":
                 axes = self._axes(message) if "axes" in message else None
                 released = self.arbiter.release(session_id, axes)
@@ -342,7 +364,18 @@ class CooperativeGateway:
             telemetry = self._telemetry_payload(runtime_tick)
         if self.twist_sink is not None:
             try:
-                self.twist_sink(arbiter_tick.twist)
+                twist_to_send = arbiter_tick.twist
+                if (
+                    self._virtual_task is not None
+                    and sample is not None
+                    and arbiter_tick.state in (RoomState.READY, RoomState.ACTIVE)
+                ):
+                    twist_to_send, _ = self._virtual_task.filter_twist(
+                        sample,
+                        self._sim_gripper.positions if self._sim_gripper is not None else None,
+                        arbiter_tick.twist,
+                    )
+                self.twist_sink(twist_to_send)
                 if self._sim_gripper is not None:
                     pinch = self.arbiter.leases.values().get(Axis.PINZA, 0.0) if arbiter_tick.state in (RoomState.READY, RoomState.ACTIVE, RoomState.SIM_ONLY) and self._fingers_available else 0.0
                     self._sim_gripper.step(pinch)
@@ -632,7 +665,10 @@ class CooperativeGateway:
         return {"type": "error", "code": code, "detail": detail}
 
     def _finish_protocol(
-        self, message_type: str, replies: list[dict[str, object]]
+        self,
+        message_type: str,
+        replies: list[dict[str, object]],
+        extra_payload: Mapping[str, object] | None = None,
     ) -> list[dict[str, object]]:
         """Record outcomes without retaining connection, lease, or session secrets."""
         if self.event_logger is not None:
@@ -643,6 +679,8 @@ class CooperativeGateway:
             }
             if first.get("type") == "error":
                 payload["error_code"] = first.get("code", "unknown")
+            if extra_payload:
+                payload.update(extra_payload)
             self.event_logger.record(
                 "protocol", room_state=self.room_state(), payload=payload
             )
@@ -688,8 +726,11 @@ async def serve_websocket(
                 asyncio.create_task(socket.close(code=1013, reason="client too slow"))
 
     async def sender(socket: Any, queue: asyncio.Queue[str]) -> None:
-        while True:
-            await socket.send(await queue.get())
+        try:
+            while True:
+                await socket.send(await queue.get())
+        except ConnectionClosed:
+            return
 
     async def handler(socket: Any, path: str | None = None) -> None:
         nonlocal connection_count
@@ -729,7 +770,7 @@ async def serve_websocket(
                     # client disappears without a clean TCP close. Leases
                     # still expire independently on their shorter watchdog.
                     idle_timeout = 5.0 if session_id is None else (
-                        2.0 if gateway._sessions[session_id].role in ("operator", "admin") else 30.0
+                        3.0 if gateway._sessions[session_id].role in ("operator", "admin") else 30.0
                     )
                     raw_message = await asyncio.wait_for(socket.recv(), timeout=idle_timeout)
                 except asyncio.TimeoutError:
@@ -747,8 +788,11 @@ async def serve_websocket(
                     await socket.close(code=1008, reason="message rate exceeded")
                     break
                 replies = gateway.receive(connection_id, raw_message)
-                for reply in replies:
-                    await socket.send(json.dumps(reply, separators=(",", ":")))
+                try:
+                    for reply in replies:
+                        await socket.send(json.dumps(reply, separators=(",", ":")))
+                except ConnectionClosed:
+                    break
                 if replies and replies[0].get("type") == "welcome":
                     clients[socket] = queue
                 elif replies and replies[0].get("code") == "authentication_failed":

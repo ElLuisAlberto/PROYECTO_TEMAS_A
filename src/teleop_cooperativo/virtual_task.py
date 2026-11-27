@@ -11,6 +11,7 @@ import time
 import numpy as np
 import pybullet as pb
 
+from .command_composer import Twist
 from .robot_frames import FINGER_ORIGINS, _origin_transform, finger_link_transform, link_transforms
 from .jaco2_kinematics import _quaternion
 
@@ -32,12 +33,17 @@ class VirtualTask:
         self.table = pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=table, basePosition=[.30, 0, -.03], physicsClientId=self.client)
         floor = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=[2.5, 2.5, .01], physicsClientId=self.client)
         self.floor = pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=floor, basePosition=[.1, 0, -.73], physicsClientId=self.client)
-        self.goal_supports = [self.table]
-        for goal, height in zip(GOALS, GOAL_HEIGHTS):
+        self.goal_supports = []
+        self.pedestal_names: dict[int, str] = {}
+        for idx, (goal, height) in enumerate(zip(GOALS, GOAL_HEIGHTS)):
             if height > 0:
                 pedestal = pb.createCollisionShape(pb.GEOM_BOX, halfExtents=[.047, .047, height / 2], physicsClientId=self.client)
-                self.goal_supports.append(pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=pedestal,
-                                   basePosition=[goal[0], goal[1], height / 2], physicsClientId=self.client))
+                ped_id = pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=pedestal,
+                                            basePosition=[goal[0], goal[1], height / 2], physicsClientId=self.client)
+                self.goal_supports.append(ped_id)
+                self.pedestal_names[ped_id] = f"Pedestal {OBJECTS[idx]['name']}"
+            else:
+                self.goal_supports.append(self.table)
         self.bodies = []
         shape_ids = {'box': pb.GEOM_BOX, 'sphere': pb.GEOM_SPHERE, 'cylinder': pb.GEOM_CYLINDER, 'capsule': pb.GEOM_CAPSULE}
         for spec, start in zip(OBJECTS, INITIAL):
@@ -61,6 +67,18 @@ class VirtualTask:
                 collisionFrameOrientation=pb.getQuaternionFromEuler([0, math.pi / 2, 0]), physicsClientId=self.client)
             self.phalanges.append([pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=shape,
                 basePosition=[0, 0, -10], physicsClientId=self.client) for _ in range(3)])
+        forearm_shape = pb.createCollisionShape(pb.GEOM_CAPSULE, radius=.036, height=.20, physicsClientId=self.client)
+        wrist_shape = pb.createCollisionShape(pb.GEOM_CAPSULE, radius=.030, height=.14, physicsClientId=self.client)
+        palm_shape = pb.createCollisionShape(pb.GEOM_SPHERE, radius=.036, physicsClientId=self.client)
+        self.arm_proxies = [
+            pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=forearm_shape, basePosition=[0, 0, -10], physicsClientId=self.client),
+            pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=wrist_shape, basePosition=[0, 0, -10], physicsClientId=self.client),
+            pb.createMultiBody(baseMass=0, baseCollisionShapeIndex=palm_shape, basePosition=[0, 0, -10], physicsClientId=self.client),
+        ]
+        self._last_center = None
+        self._last_tips = None
+        self._last_grasp_target = None
+        self._blocked_by: list[str] = []
         self.previous_proxies = None
         self.previous_anchor = None
         self.grip_blocked = False
@@ -97,6 +115,7 @@ class VirtualTask:
         self.reset_blocked.clear()
         self.contact_load_time = 0.0
         self.release_reason = None
+        self._blocked_by = []
         self._accumulator = 0.0
         self.last_time = self.clock()
 
@@ -124,7 +143,7 @@ class VirtualTask:
             pb.removeConstraint(self.constraint, physicsClientId=self.client)
             self.constraint = None
         if self.held is not None:
-            for tip in self.tips + sum(self.phalanges, []):
+            for tip in self.tips + sum(self.phalanges, []) + self.arm_proxies:
                 pb.setCollisionFilterPair(self.bodies[self.held], tip, -1, -1, 1, physicsClientId=self.client)
         self.held = None
         self.contact_load_time = 0.0
@@ -145,8 +164,23 @@ class VirtualTask:
         self.hold_relative = (rel_position, rel_rotation)
         self.release_reason = None
         self.contact_load_time = 0.0
-        for tip in self.tips + sum(self.phalanges, []):
+        for tip in self.tips + sum(self.phalanges, []) + self.arm_proxies:
             pb.setCollisionFilterPair(body, tip, -1, -1, 0, physicsClientId=self.client)
+
+    @staticmethod
+    def _pose_between(p1, p2):
+        mid = tuple((float(a) + float(b)) * 0.5 for a, b in zip(p1, p2))
+        vec = np.array([float(b) - float(a) for a, b in zip(p1, p2)], dtype=float)
+        length = float(np.linalg.norm(vec))
+        if length < 1e-6:
+            return mid, (0.0, 0.0, 0.0, 1.0)
+        z_axis = vec / length
+        ref = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        x_axis = np.cross(ref, z_axis)
+        x_axis /= float(np.linalg.norm(x_axis))
+        y_axis = np.cross(z_axis, x_axis)
+        rot = np.column_stack((x_axis, y_axis, z_axis))
+        return mid, _quaternion(rot)
 
     @staticmethod
     def tip_positions(joints, fingers):
@@ -205,9 +239,20 @@ class VirtualTask:
         if not valid:
             self._release()
             self.previous_angle = self.previous_center = self.previous_proxies = self.previous_anchor = None
-            for tip in self.tips + sum(self.phalanges, []):
+            self._last_center = self._last_tips = self._last_grasp_target = None
+            self._blocked_by = []
+            for tip in self.tips + sum(self.phalanges, []) + self.arm_proxies:
                 pb.resetBasePositionAndOrientation(tip, [0, 0, -10], [0, 0, 0, 1], physicsClientId=self.client)
         else:
+            frames = link_transforms(sample.joint_positions)
+            forearm_pos, forearm_rot = self._pose_between(frames[3][:3, 3], frames[4][:3, 3])
+            wrist_pos, wrist_rot = self._pose_between(frames[4][:3, 3], frames[6][:3, 3])
+            palm_pos = tuple(float(v) for v in (frames[6] @ np.array([0.0, 0.0, -0.055, 1.0]))[:3])
+            pb.resetBasePositionAndOrientation(self.arm_proxies[0], forearm_pos, forearm_rot, physicsClientId=self.client)
+            pb.resetBasePositionAndOrientation(self.arm_proxies[1], wrist_pos, wrist_rot, physicsClientId=self.client)
+            pb.resetBasePositionAndOrientation(self.arm_proxies[2], palm_pos, sample.pose.quaternion_xyzw, physicsClientId=self.client)
+            self._last_center = center
+            self._last_tips = tips
             # A discontinuous telemetric jump must not fling an attached object.
             if self.previous_center is not None and math.dist(center, self.previous_center) > .12:
                 self._release()
@@ -231,6 +276,7 @@ class VirtualTask:
                 candidate = self._candidate(center, tips)
                 if candidate is not None:
                     self._attach(candidate, center, orientation)
+            self._last_grasp_target = self._candidate(center, tips) if self.held is None else None
             self.previous_angle = angle
         self._accumulator += dt
         steps = int((self._accumulator + 1e-10) * 120)
@@ -284,4 +330,119 @@ class VirtualTask:
                      'caido' if supported and (not upright or position[2] < -.2) else
                      'apoyado' if supported else 'en_aire')
             objects.append({'id': i, 'name': OBJECTS[i]['name'], 'position': list(position), 'quaternion_xyzw': list(orientation), 'delivered': self.scored[i], 'state': state})
-        return {'objects': objects, 'held': self.held, 'delivered': sum(self.scored), 'total': len(self.bodies), 'release_reason': self.release_reason}
+        nearest_object = None
+        if self._last_center is not None:
+            best_dist = math.inf
+            for i, body in enumerate(self.bodies):
+                if self.scored[i]:
+                    continue
+                pos, _ = pb.getBasePositionAndOrientation(body, physicsClientId=self.client)
+                dist = math.dist(self._last_center, pos)
+                if dist < best_dist:
+                    best_dist = dist
+                    nearest_object = {
+                        'id': i,
+                        'name': OBJECTS[i]['name'],
+                        'distance_cm': round(dist * 100.0, 1),
+                    }
+        robot_bodies = self.tips + sum(self.phalanges, []) + self.arm_proxies
+        touched_objects = set()
+        contacts_seen = []
+        def _record_contact(label):
+            if label not in contacts_seen:
+                contacts_seen.append(label)
+        if self._last_center is not None:
+            for rb in robot_bodies:
+                for obj_idx, body in enumerate(self.bodies):
+                    if obj_idx == self.held:
+                        continue
+                    if pb.getClosestPoints(rb, body, 0.002, physicsClientId=self.client):
+                        touched_objects.add(obj_idx)
+                        _record_contact(f"Muñeco {OBJECTS[obj_idx]['name']}")
+                for ped_id, ped_name in self.pedestal_names.items():
+                    if pb.getClosestPoints(rb, ped_id, 0.002, physicsClientId=self.client):
+                        _record_contact(ped_name)
+                if pb.getClosestPoints(rb, self.table, 0.002, physicsClientId=self.client):
+                    _record_contact('Mesa virtual')
+        return {
+            'objects': objects,
+            'held': self.held,
+            'delivered': sum(self.scored),
+            'total': len(self.bodies),
+            'release_reason': self.release_reason,
+            'nearest_object': nearest_object,
+            'in_grasp_range': self._last_grasp_target is not None,
+            'grasp_target': self._last_grasp_target,
+            'touched_objects': sorted(touched_objects),
+            'contacts': contacts_seen,
+            'blocked_by': list(self._blocked_by),
+            'virtual_collision': bool(contacts_seen),
+        }
+
+    def filter_twist(self, sample, fingers, twist: Twist) -> tuple[Twist, list[str]]:
+        """Block velocity components moving into the virtual table or pedestals."""
+        if sample is None:
+            self._blocked_by = []
+            return twist, []
+        try:
+            frames = link_transforms(sample.joint_positions)
+            f_angles = fingers if fingers is not None and len(fingers) == 3 else (0.0, 0.0, 0.0)
+            tips = self.tip_positions(sample.joint_positions, f_angles)
+            tip_center = tuple(float(x) for x in np.mean(tips, axis=0))
+            tool_pos = tuple(float(v) for v in sample.pose.position)
+            hand_pos = np.array([float(v) for v in frames[6][:3, 3]], dtype=float)
+            palm_pos = tuple(float(v) for v in (frames[6] @ np.array([0.0, 0.0, -0.055, 1.0]))[:3])
+            wrist_pos = tuple(float(v) for v in frames[4][:3, 3])
+            guarded = list(tips) + [tip_center, tool_pos, palm_pos, tuple(float(v) for v in hand_pos), wrist_pos]
+        except (ValueError, TypeError, IndexError):
+            self._blocked_by = []
+            return twist, []
+
+        in_vx, in_vy, in_vz = (float(v) for v in twist.linear)
+        vx, vy, vz = in_vx, in_vy, in_vz
+        wx, wy, wz = (float(v) for v in twist.angular)
+        blocked: list[str] = []
+
+        def _add_block(name: str) -> None:
+            if name not in blocked:
+                blocked.append(name)
+
+        # Virtual table top at z = 0.00 (x in [-0.32, 0.92], y in [-0.47, 0.47])
+        for p in guarded:
+            px, py, pz = p
+            if -0.32 <= px <= 0.92 and -0.47 <= py <= 0.47 and pz <= 0.015:
+                if in_vz < 0.0:
+                    vz = 0.0
+                    _add_block("Mesa virtual")
+                if pz <= 0.012 and (wx != 0.0 or wy != 0.0):
+                    rel = np.array(p, dtype=float) - hand_pos
+                    v_rot = np.cross(np.array([wx, wy, wz], dtype=float), rel)
+                    if float(v_rot[2]) < -1e-4:
+                        wx = 0.0
+                        wy = 0.0
+                        _add_block("Mesa virtual")
+
+        # Virtual pedestals (half-width 0.047 m, top at z = height)
+        half = 0.047
+        for idx, (goal, height) in enumerate(zip(GOALS, GOAL_HEIGHTS)):
+            if height <= 0.0:
+                continue
+            gx, gy = float(goal[0]), float(goal[1])
+            ped_name = f"Pedestal {OBJECTS[idx]['name']}"
+            for px, py, pz in guarded:
+                dx = px - gx
+                dy = py - gy
+                if abs(dx) <= half + 0.020 and abs(dy) <= half + 0.020 and (height - 0.035) <= pz <= (height + 0.020):
+                    if in_vz < 0.0:
+                        vz = 0.0
+                        _add_block(ped_name)
+                if pz < height + 0.005 and abs(dx) <= half + 0.022 and abs(dy) <= half + 0.022:
+                    if abs(dx) >= abs(dy) and in_vx * dx < 0.0:
+                        vx = 0.0
+                        _add_block(ped_name)
+                    if abs(dy) >= abs(dx) and in_vy * dy < 0.0:
+                        vy = 0.0
+                        _add_block(ped_name)
+
+        self._blocked_by = blocked
+        return Twist((vx, vy, vz), (wx, wy, wz)), list(blocked)

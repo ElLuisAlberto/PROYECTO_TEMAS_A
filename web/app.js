@@ -8,7 +8,7 @@
     "axis-options", "count", "enter", "back", "selection-message",
     "dashboard-kicker", "dashboard-title", "room-state", "operator-panel",
     "admin-panel", "controls", "telemetry-status", "telemetry", "telemetry-note",
-    "owners", "dashboard-message", "pause-banner", "gripper-status", "gripper-position", "task-progress", "task-items", "task-note", "task-description", "stop", "rearm", "telemetry-advanced", "admin-credential", "admin-token",
+    "owners", "dashboard-message", "pause-banner", "collision-banner", "gripper-status", "gripper-position", "task-progress", "task-items", "task-note", "task-description", "stop", "rearm", "telemetry-advanced", "admin-credential", "admin-token",
   ].map((id) => [id, el(id)]));
   const identity = Math.random().toString(36).slice(2, 8).toUpperCase();
   const state = {
@@ -17,6 +17,7 @@
     leases: new Map(), values: new Map(), speeds: new Map(), grantRevision: -1,
     sequence: 0, heartbeat: null, input: null, retry: null,
     pendingClaim: false, telemetry: null, selectedRole: null, gripperSimulation: false,
+    rttMs: null,
   };
   const ROLE_NAMES = { operator: "Operador", observer: "Observador", admin: "Administrador" };
   let physical = false, readOnly = false;
@@ -78,7 +79,11 @@
   }
   function startTimers() {
     stopTimers();
-    state.heartbeat = setInterval(() => send({type:"heartbeat"}), 100);
+    state.heartbeat = setInterval(() => {
+      const hb = {type: "heartbeat", client_sent_ms: Math.round(performance.now() * 1000) / 1000};
+      if (Number.isFinite(state.rttMs)) hb.rtt_ms = Math.round(state.rttMs * 1000) / 1000;
+      send(hb);
+    }, 100);
     state.input = setInterval(sendInputs, 50);
   }
   function closeCurrent() {
@@ -91,7 +96,7 @@
     state.socket = null;
     stopTimers();
     state.connected = false; state.session = null; state.leases.clear();
-    state.values.clear(); state.sequence = 0; state.pendingClaim = false;
+    state.values.clear(); state.sequence = 0; state.pendingClaim = false; state.rttMs = null;
     if (old && old.readyState < WebSocket.CLOSING) old.close();
   }
   function connect(role, claimAfterWelcome = false) {
@@ -130,7 +135,7 @@
       stopTimers(); state.socket = null; state.connected = false; state.session = null;
       state.leases.clear(); state.values.clear(); state.pendingClaim = false;
       state.axes = {}; state.modes = {}; state.room = null; state.telemetry = null; state.gripperSimulation = false;
-      state.selectedRole = null;
+      state.selectedRole = null; state.rttMs = null;
       status("Desconectado", "bad");
       show("modes"); renderModes(); renderTelemetry();
       ui["mode-message"].textContent = "Conexión perdida. Reconectando a la computadora madre…";
@@ -231,9 +236,12 @@
     ui["task-progress"].textContent = `${task.delivered} / 5`;
     ui["task-items"].replaceChildren();
     const taskStates = {sujeto: "en pinza", apoyado: "apoyado", caido: "caído", en_aire: "en el aire", entregado: "entregado"};
+    const touchedSet = new Set(Array.isArray(task.touched_objects) ? task.touched_objects : []);
     for (let i = 0; i < 5; i++) {
       const item = items.find(x => x && x.id === i);
-      const badge = document.createElement("span"); badge.className = "task-item";
+      const badge = document.createElement("span");
+      const extraClass = task.grasp_target === i ? " is-detected" : touchedSet.has(i) ? " is-touched" : "";
+      badge.className = "task-item" + extraClass;
       const dot = document.createElement("span"); dot.className = "task-dot"; dot.style.backgroundColor = colors[i];
       const text = document.createElement("span");
       text.textContent = `${names[i]} · ${item?.delivered ? "entregado" : task.held === i ? "en pinza" : (taskStates[item?.state] || "pendiente")}`;
@@ -251,13 +259,35 @@
       });
       badge.append(reset); ui["task-items"].append(badge);
     }
-    ui["task-note"].textContent = task.delivered === 5 ? "¡Tarea completada!" : task.release_reason === "impacto" ? "La pinza soltó el muñeco por presión o impacto. Abre la pinza con − antes de volver a sujetarlo." : Number.isInteger(task.held) && task.held >= 0 && task.held < 5 ? `Sujetando ${names[task.held]}. Mantén la pinza cerrada, llévalo a su círculo y pulsa − para soltarlo.` : "Selecciona PINZA · SIMULADA, acerca los dedos al muñeco y mantén + para sujetarlo. Pulsa − para soltarlo.";
+    const contactsList = Array.isArray(task.contacts) ? task.contacts : [];
+    const nearObj = task.nearest_object && typeof task.nearest_object.name === "string" ? task.nearest_object : null;
+    ui["task-note"].textContent = task.delivered === 5
+      ? "¡Tarea completada!"
+      : task.release_reason === "impacto"
+        ? "La pinza soltó el muñeco por presión o impacto. Abre la pinza con − antes de volver a sujetarlo."
+        : Number.isInteger(task.held) && task.held >= 0 && task.held < 5
+          ? `Sujetando ${names[task.held]}. Mantén la pinza cerrada, llévalo a su círculo y pulsa − para soltarlo.`
+          : task.in_grasp_range && Number.isInteger(task.grasp_target) && task.grasp_target >= 0 && task.grasp_target < 5
+            ? `🎯 Objeto detectado: ${names[task.grasp_target]}${nearObj && nearObj.id === task.grasp_target && Number.isFinite(nearObj.distance_cm) ? ` (${nearObj.distance_cm.toFixed(1)} cm)` : ""} — mantén + en PINZA para sujetarlo.`
+            : contactsList.length
+              ? `⚠ Contacto virtual: ${contactsList.join(", ")} (no detiene el brazo físico).`
+              : nearObj && Number.isFinite(nearObj.distance_cm)
+                ? `Objeto más cercano: ${nearObj.name} (${nearObj.distance_cm.toFixed(1)} cm). Selecciona PINZA · SIMULADA y mantén + para sujetarlo.`
+                : "Selecciona PINZA · SIMULADA, acerca los dedos al muñeco y mantén + para sujetarlo. Pulsa − para soltarlo.";
   }
 
   function renderTelemetry() {
     ui.telemetry.replaceChildren();
     const t = state.telemetry;
     renderTask(t?.virtual_task);
+    const blocked = Array.isArray(t?.virtual_task?.blocked_by) ? t.virtual_task.blocked_by : [];
+    const wallActive = Boolean(state.connected && blocked.length > 0);
+    ui["collision-banner"].hidden = !wallActive;
+    if (wallActive) {
+      ui["collision-banner"].textContent = `⛔ Límite virtual: movimiento bloqueado hacia ${blocked.join(", ")} (puedes subir con Z+ o alejarte).`;
+    } else {
+      ui["collision-banner"].textContent = "";
+    }
     const age = t && Number.isFinite(t.pose_age_sec) && t.pose_age_sec >= 0
       ? t.pose_age_sec + (performance.now() - t.receivedAt) / 1000 : Infinity;
     const fresh = state.connected && t && t.telemetry_available !== false && age <= 1;
@@ -268,7 +298,7 @@
     ui["telemetry-status"].textContent = fresh ? "En vivo" : "No disponible";
     ui["telemetry-status"].className = "badge " + (fresh ? "good" : "bad");
     ui["telemetry-note"].textContent = fresh
-      ? `${physical ? "Jaco2 físico · USB · movimiento no validado · armado no disponible" : "Jaco2 simulado"} · muestra hace ${age.toFixed(2)} s`
+      ? `${physical ? "Jaco2 físico · USB · movimiento no validado · armado no disponible" : "Jaco2 simulado"} · muestra hace ${age.toFixed(2)} s${Number.isFinite(state.rttMs) ? ` · RTT ${state.rttMs.toFixed(1)} ms` : ""}`
       : "Sin muestra reciente; no se muestran datos vencidos.";
     const groups = [
       ["Posición", "m", t?.pose?.position],
@@ -295,6 +325,7 @@
       ["Cuaternión (x, y, z, w)", fresh ? formatVector(t.pose?.quaternion_xyzw, 4) : "—"],
       ["Articulaciones J1–J6 (rad)", fresh ? formatVector(t.joint_positions, 6) : "—"],
       ["Dedos simulados F1–F3 (rad)", fresh && t.finger_source === "simulated" ? formatVector(t.finger_positions, 3) : "—"],
+      ["Latencia de red (RTT)", Number.isFinite(state.rttMs) ? `${state.rttMs.toFixed(1)} ms` : "—"],
     ]) {
       const dt = document.createElement("dt"), dd = document.createElement("dd");
       dt.textContent = label; dd.textContent = value; ui["telemetry-advanced"].append(dt, dd);
@@ -451,6 +482,12 @@
         } else if (state.role === "admin" || (readOnly && state.role === "operator")) enterDashboard(state.role);
         break;
       case "room_state": renderRoom(message); break;
+      case "heartbeat_ack":
+        if (typeof message.client_sent_ms === "number" && Number.isFinite(message.client_sent_ms)) {
+          const rtt = performance.now() - message.client_sent_ms;
+          if (Number.isFinite(rtt) && rtt >= 0 && rtt <= 60000) state.rttMs = rtt;
+        }
+        break;
       case "telemetry":
         state.telemetry = {...message, receivedAt:performance.now()};
         const hadSimulation = state.gripperSimulation;

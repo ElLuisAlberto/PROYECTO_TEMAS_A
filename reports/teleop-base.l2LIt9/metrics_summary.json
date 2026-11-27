@@ -1,0 +1,251 @@
+{
+  "run_id": "teleop-base.l2LIt9",
+  "run_dir": "/tmp/teleop-base.l2LIt9",
+  "start_utc": "2026-11-27T01:23:37.805Z",
+  "end_utc": "2026-11-27T01:30:43.194Z",
+  "duration_sec": 425.39,
+  "malformed_tail_lines_skipped": 0,
+  "telemetry_sources": {
+    "ros_physical_jaco2_fk": 15794
+  },
+  "event_counts": {
+    "telemetry": 15803,
+    "protocol": 23751
+  },
+  "protocol_messages": {
+    "hello": 9,
+    "heartbeat": 9103,
+    "claim": 2,
+    "input": 14637
+  },
+  "protocol_outcomes": {
+    "hello:welcome": 9,
+    "heartbeat:heartbeat_ack": 8623,
+    "claim:claim_granted": 2,
+    "input:input_accepted": 14636,
+    "input:error": 1,
+    "heartbeat:error": 480
+  },
+  "protocol_errors": {
+    "room_not_operational": 481
+  },
+  "gateway_tick_dt_ms": {
+    "count": 15802,
+    "mean": 26.92,
+    "std": 2.586,
+    "min": 22.204,
+    "p50": 26.387,
+    "p95": 31.487,
+    "p99": 37.869,
+    "max": 51.794,
+    "effective_hz": 37.147,
+    "within_15_25_ms_pct": 16.42
+  },
+  "pose_age_ms": {
+    "count": 15794,
+    "mean": 38.136,
+    "std": 14.29,
+    "min": 0.02,
+    "p50": 28.304,
+    "p95": 56.47,
+    "p99": 66.839,
+    "max": 147.304,
+    "within_300ms_pct": 100.0
+  },
+  "network_rtt": {
+    "available": true,
+    "overall_ms": {
+      "count": 7836,
+      "mean": 25.786,
+      "std": 29.267,
+      "min": 4.0,
+      "p50": 16.8,
+      "p95": 77.95,
+      "p99": 148.26,
+      "max": 383.8
+    },
+    "by_client": {
+      "Equipo 4VP9ZA": {
+        "count": 3791,
+        "mean": 18.453,
+        "std": 11.2,
+        "min": 4.0,
+        "p50": 16.0,
+        "p95": 36.85,
+        "p99": 64.01,
+        "max": 186.6
+      },
+      "Equipo 55QA40": {
+        "count": 3761,
+        "mean": 33.345,
+        "std": 38.878,
+        "min": 5.3,
+        "p50": 18.1,
+        "p95": 113.2,
+        "p99": 183.7,
+        "max": 383.8
+      },
+      "Equipo 77S454": {
+        "count": 131,
+        "mean": 19.686,
+        "std": 8.166,
+        "min": 10.9,
+        "p50": 17.1,
+        "p95": 35.85,
+        "p99": 49.72,
+        "max": 55.2
+      },
+      "Equipo 7YW04P": {
+        "count": 153,
+        "mean": 26.902,
+        "std": 27.917,
+        "min": 7.6,
+        "p50": 16.2,
+        "p95": 91.28,
+        "p99": 131.86,
+        "max": 144.7
+      }
+    }
+  },
+  "direct_bridge": {
+    "available": true,
+    "mock": false,
+    "intervals_count": 382,
+    "transmissions_per_interval": {
+      "count": 382,
+      "mean": 100.131,
+      "std": 5.314,
+      "min": 30.0,
+      "p50": 101.0,
+      "p95": 101.0,
+      "p99": 102.0,
+      "max": 103.0
+    },
+    "effective_hz": {
+      "count": 381,
+      "mean": 99.611,
+      "std": 5.32,
+      "min": 23.247,
+      "p50": 100.0,
+      "p95": 100.398,
+      "p99": 101.901,
+      "max": 101.981
+    },
+    "sdk_accepted_joint_cmd_logs": 381,
+    "recovery_logs": 0,
+    "warnings": 2,
+    "errors": 0
+  },
+  "room_state_dwell_sec": {
+    "NOT_READY": 0.22,
+    "SIM_ONLY": 25.45,
+    "READY": 2.73,
+    "ACTIVE": 366.27,
+    "FAULT": 30.72
+  },
+  "state_transitions": {
+    "NOT_READY->SIM_ONLY": 1,
+    "SIM_ONLY->READY": 1,
+    "READY->ACTIVE": 1,
+    "ACTIVE->FAULT": 1
+  },
+  "cooperation": {
+    "distinct_operators": 2,
+    "operators_axes": {
+      "Equipo 4VP9ZA": [
+        "PINZA",
+        "PITCH",
+        "ROLL"
+      ],
+      "Equipo 55QA40": [
+        "X",
+        "Y",
+        "Z"
+      ]
+    },
+    "max_simultaneous_operators": 2,
+    "max_simultaneous_reserved_axes": 6,
+    "single_operator_sec": 3.53,
+    "multi_operator_overlap_sec": 362.75,
+    "multi_operator_overlap_pct_of_occupied": 99.04
+  },
+  "kinematics": {
+    "samples": 15794,
+    "start_xyz_m": [
+      0.2536,
+      0.3551,
+      0.4671
+    ],
+    "end_xyz_m": [
+      0.7365,
+      0.3596,
+      0.6335
+    ],
+    "excursion_cm": {
+      "X": 50.32,
+      "Y": 47.97,
+      "Z": 52.33
+    },
+    "path_length_m": 6.3439,
+    "max_displacement_from_start_cm": 61.28,
+    "active_linear_motion_sec": 146.37,
+    "active_angular_motion_sec": 101.85,
+    "peak_linear_speed_mm_s": 50.0,
+    "peak_angular_speed_deg_s": 10.03,
+    "commanded_time_by_axis_sec": {
+      "X": 44.615,
+      "Y": 62.739,
+      "Z": 39.016,
+      "ROLL": 52.974,
+      "PITCH": 48.873,
+      "YAW": 0.0,
+      "PINZA": 9.055
+    }
+  },
+  "joints_deg": {
+    "J1": {
+      "min_deg": 0.02,
+      "max_deg": 359.92,
+      "range_deg": 359.9
+    },
+    "J2": {
+      "min_deg": 85.23,
+      "max_deg": 177.93,
+      "range_deg": 92.7
+    },
+    "J3": {
+      "min_deg": 174.08,
+      "max_deg": 314.69,
+      "range_deg": 140.61
+    },
+    "J4": {
+      "min_deg": 0.04,
+      "max_deg": 359.89,
+      "range_deg": 359.85
+    },
+    "J5": {
+      "min_deg": 226.84,
+      "max_deg": 338.43,
+      "range_deg": 111.6
+    },
+    "J6": {
+      "min_deg": -138.96,
+      "max_deg": 66.85,
+      "range_deg": 205.8
+    }
+  },
+  "simulated_gripper": {
+    "samples": 15794,
+    "active": true,
+    "min_rad": 0.0,
+    "max_rad": 1.175,
+    "range_rad": 1.175
+  },
+  "virtual_task": {
+    "available": true,
+    "delivered_max": 0,
+    "total": 5,
+    "grabs_detected": 0,
+    "impact_releases": 0
+  }
+}

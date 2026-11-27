@@ -58,7 +58,31 @@ def _parse_virtual_task(value: object) -> dict[str, object] | None:
     delivered = value.get("delivered")
     if type(delivered) is not int or not 0 <= delivered <= 5:
         return None
-    return {"objects": result, "held": held, "delivered": delivered, "total": 5, "release_reason": "impacto" if value.get("release_reason") == "impacto" else None}
+    out: dict[str, object] = {
+        "objects": result,
+        "held": held,
+        "delivered": delivered,
+        "total": 5,
+        "release_reason": "impacto" if value.get("release_reason") == "impacto" else None,
+    }
+    nearest = value.get("nearest_object")
+    if isinstance(nearest, Mapping) and isinstance(nearest.get("name"), str) and isinstance(nearest.get("distance_cm"), (int, float)):
+        out["nearest_object"] = {
+            "id": nearest.get("id") if type(nearest.get("id")) is int else None,
+            "name": nearest["name"],
+            "distance_cm": float(nearest["distance_cm"]),
+        }
+    out["in_grasp_range"] = value.get("in_grasp_range") is True
+    grasp_target = value.get("grasp_target")
+    out["grasp_target"] = grasp_target if type(grasp_target) is int and 0 <= grasp_target < 5 else None
+    touched = value.get("touched_objects")
+    out["touched_objects"] = [x for x in touched if type(x) is int and 0 <= x < 5] if isinstance(touched, list) else []
+    contacts = value.get("contacts")
+    out["contacts"] = [str(c) for c in contacts if isinstance(c, str)] if isinstance(contacts, list) else []
+    blocked = value.get("blocked_by")
+    out["blocked_by"] = [str(b) for b in blocked if isinstance(b, str)] if isinstance(blocked, list) else []
+    out["virtual_collision"] = value.get("virtual_collision") is True
+    return out
 
 
 @dataclass(frozen=True)

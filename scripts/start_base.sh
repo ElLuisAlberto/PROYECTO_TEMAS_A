@@ -6,7 +6,16 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
-readonly ROS_SETUP="/opt/ros/humble/setup.bash"
+export KINOVA_ROOT="${KINOVA_ROOT:-/home/fabio/TemasA/kinova-ros/kinova_driver}"
+if [[ -n "${ROS_SETUP:-}" ]]; then
+    readonly ROS_SETUP
+elif [[ -f "/opt/ros/humble/setup.bash" ]]; then
+    readonly ROS_SETUP="/opt/ros/humble/setup.bash"
+elif [[ -f "/opt/ros/jazzy/setup.bash" ]]; then
+    readonly ROS_SETUP="/opt/ros/jazzy/setup.bash"
+else
+    readonly ROS_SETUP="/opt/ros/humble/setup.bash"
+fi
 readonly WORKSPACE_SETUP="$PROJECT_ROOT/ros2_ws/install/setup.bash"
 readonly HTTPS_PORT=8443
 readonly WEBSOCKET_PORT=8765
@@ -105,6 +114,11 @@ is_child_running() {
     kill -0 "$pid" 2>/dev/null
 }
 
+is_process_group_running() {
+    local pid="$1"
+    kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null
+}
+
 stop_process_group() {
     local pid="$1"
     # Each child is started with setsid, so this reaches any child it spawned too.
@@ -124,22 +138,23 @@ cleanup() {
         return
     fi
     CLEANUP_STARTED=1
-    trap - EXIT INT TERM
+    trap - EXIT
+    trap '' INT TERM
 
     if ((${#CHILD_PIDS[@]})); then
         info "Cerrando los procesos iniciados por esta estación base..."
         for ((index=${#CHILD_PIDS[@]} - 1; index >= 0; index--)); do
             pid="${CHILD_PIDS[index]}"
-            if is_child_running "$pid"; then
+            if is_process_group_running "$pid"; then
                 stop_process_group "$pid"
             fi
         done
 
-        deadline=$((SECONDS + 10))
+        deadline=$((SECONDS + 4))
         while ((SECONDS < deadline)); do
             local_any_running=0
             for pid in "${CHILD_PIDS[@]}"; do
-                if is_child_running "$pid"; then
+                if is_process_group_running "$pid"; then
                     local_any_running=1
                     break
                 fi
@@ -149,7 +164,7 @@ cleanup() {
         done
 
         for pid in "${CHILD_PIDS[@]}"; do
-            if is_child_running "$pid"; then
+            if is_process_group_running "$pid"; then
                 force_stop_process_group "$pid"
             fi
         done
@@ -255,7 +270,7 @@ main() {
         local_web_args+=(--allow-local-web)
     fi
 
-    [[ -f "$ROS_SETUP" ]] || die "No existe ROS 2 Humble en $ROS_SETUP"
+    [[ -f "$ROS_SETUP" ]] || die "No existe ROS 2 en $ROS_SETUP"
     [[ -f "$WORKSPACE_SETUP" ]] || die "No existe el workspace instalado en $WORKSPACE_SETUP. Compile ros2_ws antes de iniciar la estación base."
     # ROS 2 Humble setup scripts read optional variables that may be unset.
     # Keep strict mode for this launcher, but temporarily allow that upstream
@@ -320,6 +335,9 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
         fuser -k -9 "${WEBSOCKET_PORT}/tcp" 2>/dev/null || true
         pkill -9 -f "teleop_cooperativo" 2>/dev/null || true
         pkill -9 -f "lan_https_proxy" 2>/dev/null || true
+        pkill -9 -f "direct_web_relay.py" 2>/dev/null || true
+        pkill -9 -f "kinova_direct_node" 2>/dev/null || true
+        pkill -9 -f "kinova_cartesian_adapter" 2>/dev/null || true
         sleep 1
     fi
 
@@ -422,6 +440,7 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
         info "Interfaz web de operadores y observadores: $lan_url"
     fi
 
+    info "Para generar métricas y gráficos de esta sesión: /usr/bin/python3 scripts/analyze_session_metrics.py $LOG_DIR"
     info "Estación base lista. Pulse Ctrl+C para cerrarla ordenadamente."
     while true; do
         local index name pid

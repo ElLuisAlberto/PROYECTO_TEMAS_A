@@ -117,7 +117,11 @@ class RosTwistSink:
         self._bool_type = Bool
         self._owns_context = not rclpy.ok()
         if self._owns_context:
-            rclpy.init()
+            try:
+                from rclpy.signals import SignalHandlerOptions
+                rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+            except (ImportError, TypeError):
+                rclpy.init()
         self._node = rclpy.create_node("cooperative_teleop_gateway")
         self._publisher = self._node.create_publisher(RosTwist, topic, 10)
         self._recovery = False

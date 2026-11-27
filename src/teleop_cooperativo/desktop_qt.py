@@ -232,12 +232,16 @@ class RobotView(QtWidgets.QFrame):
             for actor in self._task_goals: actor.SetVisibility(False)
             return
         poses = {item['id']: self._task_pose(item['position'], item['quaternion_xyzw']) for item in task['objects']}
+        touched = set(task.get('touched_objects') or ())
+        grasp_target = task.get('grasp_target')
         for actor, index, local in self._task_parts:
             transform = poses[index] @ local
             matrix = vtk.vtkMatrix4x4()
             for row in range(4):
                 for column in range(4): matrix.SetElement(row, column, float(transform[row, column]))
             actor.SetUserMatrix(matrix); actor.SetVisibility(True)
+            highlighted = index in touched or grasp_target == index
+            actor.GetProperty().SetAmbient(0.75 if highlighted else 0.35)
         for actor in self._task_goals: actor.SetVisibility(True)
 
     @staticmethod
@@ -1006,10 +1010,31 @@ class QtDesktopConsole:
         task = snap.virtual_task if snap.connected else None
         self.task_status.setText(f"Muñecos entregados: {task['delivered']} / 5" if task is not None else "Juego virtual no disponible")
         if task is not None and task['held'] is not None:
+            self.task_detail.setStyleSheet("color: #15803d;")
             self.task_detail.setText(f"Sujetando: {OBJECTS[task['held']]['name']} · llévalo a su círculo.")
         elif task is not None and task.get("release_reason") == "impacto":
+            self.task_detail.setStyleSheet("color: #b45309;")
             self.task_detail.setText("Muñeco soltado por presión. Abre la pinza antes de sujetarlo de nuevo.")
+        elif task is not None and task.get("blocked_by"):
+            self.task_detail.setStyleSheet("color: #b45309;")
+            self.task_detail.setText("⛔ Límite virtual: bloqueado por " + ", ".join(task["blocked_by"]) + " (sube o aléjate).")
+        elif task is not None and task.get("in_grasp_range") and task.get("grasp_target") is not None:
+            tid = task["grasp_target"]
+            dist_txt = ""
+            nearest = task.get("nearest_object")
+            if isinstance(nearest, dict) and nearest.get("id") == tid:
+                dist_txt = f" ({nearest['distance_cm']:.1f} cm)"
+            self.task_detail.setStyleSheet("color: #15803d;")
+            self.task_detail.setText(f"Objeto detectado: {OBJECTS[tid]['name']}{dist_txt} · cierra PINZA (+) para sujetarlo.")
+        elif task is not None and task.get("contacts"):
+            self.task_detail.setStyleSheet("color: #b45309;")
+            self.task_detail.setText("Contacto virtual: " + ", ".join(task["contacts"]) + " (no detiene el brazo físico).")
+        elif task is not None and isinstance(task.get("nearest_object"), dict):
+            nearest = task["nearest_object"]
+            self.task_detail.setStyleSheet("")
+            self.task_detail.setText(f"Objeto más cercano: {nearest['name']} ({nearest['distance_cm']:.1f} cm). Los contactos virtuales no detienen el brazo físico.")
         else:
+            self.task_detail.setStyleSheet("")
             self.task_detail.setText("Lleva cada muñeco a su círculo. El agarre es virtual; los contactos no detienen el brazo físico." if self.physical else "Lleva cada muñeco al círculo de su color. El agarre es virtual y asistido.")
         if self.output_control is not None:
             self.task_reset.setEnabled(task is not None and not self.shutdown_locked)

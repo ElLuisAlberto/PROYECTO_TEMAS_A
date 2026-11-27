@@ -13,7 +13,11 @@ class DirectOutputControl:
         self.service_type = SetBool
         self.owns_context = not rclpy.ok()
         if self.owns_context:
-            rclpy.init()
+            try:
+                from rclpy.signals import SignalHandlerOptions
+                rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+            except (ImportError, TypeError):
+                rclpy.init()
         self.node = Node('direct_output_console')
         self.bool_type = Bool
         self.array_type = Float64MultiArray

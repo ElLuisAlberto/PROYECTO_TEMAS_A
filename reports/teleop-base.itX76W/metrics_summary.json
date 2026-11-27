@@ -1,0 +1,238 @@
+{
+  "run_id": "teleop-base.itX76W",
+  "run_dir": "/tmp/teleop-base.itX76W",
+  "start_utc": "2026-11-27T01:46:21.720Z",
+  "end_utc": "2026-11-27T02:04:07.463Z",
+  "duration_sec": 1065.74,
+  "malformed_tail_lines_skipped": 0,
+  "telemetry_sources": {
+    "ros_physical_jaco2_fk": 37947
+  },
+  "event_counts": {
+    "telemetry": 37956,
+    "protocol": 43977
+  },
+  "protocol_messages": {
+    "hello": 19,
+    "heartbeat": 22815,
+    "claim": 6,
+    "input": 21137
+  },
+  "protocol_outcomes": {
+    "hello:welcome": 19,
+    "heartbeat:heartbeat_ack": 22815,
+    "claim:claim_granted": 6,
+    "input:input_accepted": 21136,
+    "input:error": 1
+  },
+  "protocol_errors": {
+    "room_not_operational": 1
+  },
+  "gateway_tick_dt_ms": {
+    "count": 37955,
+    "mean": 28.079,
+    "std": 3.16,
+    "min": 22.008,
+    "p50": 27.365,
+    "p95": 34.236,
+    "p99": 39.832,
+    "max": 104.053,
+    "effective_hz": 35.614,
+    "within_15_25_ms_pct": 8.35
+  },
+  "pose_age_ms": {
+    "count": 37947,
+    "mean": 38.662,
+    "std": 14.732,
+    "min": 0.02,
+    "p50": 29.541,
+    "p95": 59.029,
+    "p99": 68.699,
+    "max": 128.943,
+    "within_300ms_pct": 100.0
+  },
+  "network_rtt": {
+    "available": true,
+    "overall_ms": {
+      "count": 20699,
+      "mean": 18.349,
+      "std": 12.324,
+      "min": 4.1,
+      "p50": 15.5,
+      "p95": 36.6,
+      "p99": 72.302,
+      "max": 232.6
+    },
+    "by_client": {
+      "Equipo 2NM3SW": {
+        "count": 10116,
+        "mean": 19.636,
+        "std": 12.667,
+        "min": 4.7,
+        "p50": 16.4,
+        "p95": 40.5,
+        "p99": 72.955,
+        "max": 220.2
+      },
+      "Equipo 9TJQWH": {
+        "count": 10583,
+        "mean": 17.119,
+        "std": 11.857,
+        "min": 4.1,
+        "p50": 14.6,
+        "p95": 32.29,
+        "p99": 67.844,
+        "max": 232.6
+      }
+    }
+  },
+  "direct_bridge": {
+    "available": true,
+    "mock": false,
+    "intervals_count": 1015,
+    "transmissions_per_interval": {
+      "count": 1015,
+      "mean": 99.12,
+      "std": 8.751,
+      "min": 2.0,
+      "p50": 101.0,
+      "p95": 101.0,
+      "p99": 101.0,
+      "max": 103.0
+    },
+    "effective_hz": {
+      "count": 1014,
+      "mean": 98.476,
+      "std": 9.343,
+      "min": 0.796,
+      "p50": 100.0,
+      "p95": 100.405,
+      "p99": 100.982,
+      "max": 102.103
+    },
+    "sdk_accepted_joint_cmd_logs": 1011,
+    "recovery_logs": 0,
+    "warnings": 2,
+    "errors": 0
+  },
+  "room_state_dwell_sec": {
+    "NOT_READY": 0.21,
+    "SIM_ONLY": 5.59,
+    "READY": 362.85,
+    "ACTIVE": 605.88,
+    "PAUSED": 91.21
+  },
+  "state_transitions": {
+    "NOT_READY->SIM_ONLY": 1,
+    "SIM_ONLY->READY": 1,
+    "READY->ACTIVE": 4,
+    "ACTIVE->PAUSED": 1,
+    "PAUSED->ACTIVE": 1,
+    "ACTIVE->READY": 3
+  },
+  "cooperation": {
+    "distinct_operators": 2,
+    "operators_axes": {
+      "Equipo 2NM3SW": [
+        "PINZA",
+        "PITCH",
+        "ROLL",
+        "X",
+        "Y",
+        "Z"
+      ],
+      "Equipo 9TJQWH": [
+        "PINZA",
+        "PITCH",
+        "ROLL",
+        "X",
+        "Y",
+        "Z"
+      ]
+    },
+    "max_simultaneous_operators": 2,
+    "max_simultaneous_reserved_axes": 6,
+    "single_operator_sec": 163.5,
+    "multi_operator_overlap_sec": 533.59,
+    "multi_operator_overlap_pct_of_occupied": 76.55
+  },
+  "kinematics": {
+    "samples": 37947,
+    "start_xyz_m": [
+      0.2569,
+      -0.0387,
+      0.1471
+    ],
+    "end_xyz_m": [
+      0.5712,
+      -0.0721,
+      0.1133
+    ],
+    "excursion_cm": {
+      "X": 54.36,
+      "Y": 64.78,
+      "Z": 45.54
+    },
+    "path_length_m": 7.9924,
+    "max_displacement_from_start_cm": 55.69,
+    "active_linear_motion_sec": 138.38,
+    "active_angular_motion_sec": 77.77,
+    "peak_linear_speed_mm_s": 50.0,
+    "peak_angular_speed_deg_s": 10.03,
+    "commanded_time_by_axis_sec": {
+      "X": 25.78,
+      "Y": 60.665,
+      "Z": 51.936,
+      "ROLL": 28.851,
+      "PITCH": 48.923,
+      "YAW": 0.0,
+      "PINZA": 10.657
+    }
+  },
+  "joints_deg": {
+    "J1": {
+      "min_deg": -57.42,
+      "max_deg": 35.68,
+      "range_deg": 93.1
+    },
+    "J2": {
+      "min_deg": 96.61,
+      "max_deg": 152.41,
+      "range_deg": 55.8
+    },
+    "J3": {
+      "min_deg": 168.67,
+      "max_deg": 337.18,
+      "range_deg": 168.51
+    },
+    "J4": {
+      "min_deg": -264.34,
+      "max_deg": 235.0,
+      "range_deg": 499.34
+    },
+    "J5": {
+      "min_deg": -168.06,
+      "max_deg": 6.24,
+      "range_deg": 174.3
+    },
+    "J6": {
+      "min_deg": 0.02,
+      "max_deg": 359.87,
+      "range_deg": 359.85
+    }
+  },
+  "simulated_gripper": {
+    "samples": 37947,
+    "active": true,
+    "min_rad": 0.0,
+    "max_rad": 1.3963,
+    "range_rad": 1.3963
+  },
+  "virtual_task": {
+    "available": true,
+    "delivered_max": 1,
+    "total": 5,
+    "grabs_detected": 2,
+    "impact_releases": 0
+  }
+}

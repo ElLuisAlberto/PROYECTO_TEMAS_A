@@ -48,8 +48,8 @@ class LeaseManager:
         self,
         *,
         max_axes_per_session: int = 3,
-        input_timeout_sec: float = 0.15,
-        lease_timeout_sec: float = 0.25,
+        input_timeout_sec: float = 0.40,
+        lease_timeout_sec: float = 1.50,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if max_axes_per_session < 1 or max_axes_per_session > len(AXES):

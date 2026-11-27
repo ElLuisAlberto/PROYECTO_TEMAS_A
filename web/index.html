@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>JACO2 · Teleoperación cooperativa</title>
-  <link rel="stylesheet" href="styles.css?v=reinicio-5">
-  <script src="app.js?v=reinicio-5" defer></script>
+  <link rel="stylesheet" href="styles.css?v=reinicio-7">
+  <script src="app.js?v=reinicio-8" defer></script>
 </head>
 <body>
 <main class="app">
@@ -27,6 +27,7 @@
   <div class="workspace">
   <header class="topbar"><div><h2>Teleoperación cooperativa</h2></div><button id="home" class="ghost" hidden>← Cambiar modo</button></header>
     <p id="pause-banner" class="pause-banner" role="status" aria-live="polite" hidden>Operación web pausada: la estación madre está controlando los joints. Tus controles se habilitarán automáticamente al terminar.</p>
+    <p id="collision-banner" class="collision-banner" role="alert" aria-live="assertive" hidden></p>
   <section id="workspace-intro" class="workspace-intro" aria-label="Selección de modo">
     <div class="intro-copy"><span class="eyebrow">PASO 01/02</span><h2>Elige tu modo de participación</h2><p>Selecciona un modo, revisa su disponibilidad y confírmalo para continuar.</p></div>
     <svg class="robot-illustration" viewBox="0 0 320 180" aria-hidden="true">
