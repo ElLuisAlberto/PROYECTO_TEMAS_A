@@ -19,7 +19,7 @@ import threading
 
 class BoundedHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True
 
     def __init__(self, address, handler, *, directory, backend_port, max_clients, session_mode="simulation"):
         super().__init__(address, handler)

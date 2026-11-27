@@ -18,7 +18,7 @@ import time
 from typing import Any, Mapping
 
 
-AXIS_NAMES = ("X", "Y", "Z", "ROLL", "PITCH", "YAW")
+AXIS_NAMES = ("X", "Y", "Z", "ROLL", "PITCH", "YAW", "PINZA")
 
 
 def _finite_vector(value: object, size: int) -> tuple[float, ...] | None:
@@ -28,6 +28,37 @@ def _finite_vector(value: object, size: int) -> tuple[float, ...] | None:
         return None
     vector = tuple(float(item) for item in value)
     return vector if all(math.isfinite(item) for item in vector) else None
+
+
+def _parse_virtual_task(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping) or value.get("total") != 5:
+        return None
+    objects = value.get("objects")
+    if not isinstance(objects, list) or len(objects) != 5:
+        return None
+    result = []
+    seen = set()
+    for item in objects:
+        if not isinstance(item, Mapping):
+            return None
+        index = item.get("id")
+        position = _finite_vector(item.get("position"), 3)
+        orientation = _finite_vector(item.get("quaternion_xyzw"), 4)
+        if type(index) is not int or index not in range(5) or index in seen or position is None or orientation is None:
+            return None
+        if any(abs(x) > 20 for x in position) or not 0.9 <= sum(x*x for x in orientation) <= 1.1:
+            return None
+        seen.add(index)
+        state = item.get("state")
+        state = state if state in ("sujeto", "apoyado", "caido", "en_aire", "entregado") else None
+        result.append({"id": index, "position": position, "quaternion_xyzw": orientation, "delivered": item.get("delivered") is True, "state": state})
+    held = value.get("held")
+    if held is not None and (type(held) is not int or held not in range(5)):
+        return None
+    delivered = value.get("delivered")
+    if type(delivered) is not int or not 0 <= delivered <= 5:
+        return None
+    return {"objects": result, "held": held, "delivered": delivered, "total": 5, "release_reason": "impacto" if value.get("release_reason") == "impacto" else None}
 
 
 @dataclass(frozen=True)
@@ -49,6 +80,9 @@ class DesktopSnapshot:
     linear: tuple[float, float, float] | None = None
     angular: tuple[float, float, float] | None = None
     joint_positions: tuple[float, ...] | None = None
+    finger_positions: tuple[float, float, float] | None = None
+    finger_source: str | None = None
+    virtual_task: Mapping[str, object] | None = None
     updated_monotonic: float | None = None
     events: tuple[str, ...] = ()
     reserved_count: int | None = None
@@ -77,6 +111,9 @@ class DesktopState:
         self._linear: tuple[float, float, float] | None = None
         self._angular: tuple[float, float, float] | None = None
         self._joint_positions: tuple[float, ...] | None = None
+        self._finger_positions: tuple[float, float, float] | None = None
+        self._finger_source: str | None = None
+        self._virtual_task: dict[str, object] | None = None
         self._updated_monotonic: float | None = None
         self._events: deque[str] = deque(maxlen=max_events)
 
@@ -96,7 +133,9 @@ class DesktopState:
     def _clear_observation_locked(self) -> None:
         self._telemetry_source = "Telemetría no disponible"
         self._telemetry_age_sec = None
-        self._position = self._quaternion = self._joint_positions = None
+        self._position = self._quaternion = self._joint_positions = self._finger_positions = None
+        self._finger_source = None
+        self._virtual_task = None
         self._linear = self._angular = None
         self._updated_monotonic = None
 
@@ -145,6 +184,9 @@ class DesktopState:
                 linear=self._linear,
                 angular=self._angular,
                 joint_positions=self._joint_positions,
+                finger_positions=self._finger_positions,
+                finger_source=self._finger_source,
+                virtual_task=self._virtual_task,
                 updated_monotonic=self._updated_monotonic,
                 events=tuple(self._events),
             )
@@ -162,12 +204,16 @@ class DesktopState:
             self._reserved_count = sum(axes[axis]["assigned"] for axis in AXIS_NAMES)
         for axis in AXIS_NAMES:
             item = axes.get(axis)
+            if isinstance(item, Mapping) and item.get("available") is False:
+                self._owners[axis] = "No disponible"
+                continue
             if not isinstance(item, Mapping) or item.get("assigned") is not True:
                 self._owners[axis] = "Disponible"
                 continue
             self._owners[axis] = self._text(item.get("owner"), "Asignado")
 
     def _apply_telemetry_locked(self, message: Mapping[str, object]) -> None:
+        self._virtual_task = _parse_virtual_task(message.get("virtual_task"))
         self._room_state = self._text(message.get("state"), self._room_state)
         twist = message.get("twist")
         if isinstance(twist, Mapping):
@@ -187,6 +233,8 @@ class DesktopState:
             self._position = None
             self._quaternion = None
             self._joint_positions = None
+            self._finger_positions = None
+            self._finger_source = None
             self._updated_monotonic = None
             return
 
@@ -221,6 +269,9 @@ class DesktopState:
             parsed = _finite_vector(joints, len(joints))
             if parsed is not None:
                 self._joint_positions = parsed
+        fingers = _finite_vector(message.get("finger_positions"), 3)
+        self._finger_positions = fingers if fingers is not None and all(0 <= v <= math.radians(80) for v in fingers) else None
+        self._finger_source = message.get("finger_source") if self._finger_positions is not None and message.get("finger_source") in ("simulated", "physical") else None
         self._updated_monotonic = time.monotonic()
 
     def _append_event_locked(self, text: str) -> None:
@@ -336,9 +387,9 @@ class GatewayObserver:
 class DesktopConsole:
     """Lazy Qt frontend, keeping the state reducer usable without GUI libraries."""
 
-    def __new__(cls, state: DesktopState, observer: GatewayObserver, direct_bridge: bool = False):
+    def __new__(cls, state: DesktopState, observer: GatewayObserver, direct_bridge: bool = False, physical: bool = False):
         from .desktop_qt import QtDesktopConsole
-        return QtDesktopConsole(state, observer, direct_bridge=direct_bridge)
+        return QtDesktopConsole(state, observer, direct_bridge=direct_bridge, physical=physical)
 
     @staticmethod
     def _format_vector(value: tuple[float, ...] | None) -> str:
@@ -350,6 +401,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-url", default="ws://127.0.0.1:8765/ws")
     parser.add_argument("--room-id", default="default")
     parser.add_argument("--direct-bridge", action="store_true", help="control local de salida del bridge directo")
+    parser.add_argument("--physical", action="store_true", help="mostrar reconexión USB física")
     parser.add_argument("--alias", default="Consola base")
     parser.add_argument("--credentials-file", type=Path, help="JSON local con credencial de observador")
     return parser
@@ -376,7 +428,7 @@ def main() -> int:
         credential=credential,
     )
     try:
-        console = DesktopConsole(state, observer, direct_bridge=arguments.direct_bridge)
+        console = DesktopConsole(state, observer, direct_bridge=arguments.direct_bridge, physical=arguments.physical)
     except (ImportError, RuntimeError, OSError, ValueError) as error:
         print(f"No se pudo iniciar la interfaz nativa: {error}")
         return 2

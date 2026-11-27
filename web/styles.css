@@ -51,6 +51,8 @@ h1 span { font-size: 13px; font-weight: 400; margin-left: 12px; letter-spacing: 
 .axis-options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
 .axis-option { min-height: 84px; padding: 20px; background: #fff; border: 1px solid var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink); font-size: 18px; font-weight: 600; }
 .axis-option small { font-size: 10px; color: var(--muted); font-weight: 400; }
+.axis-option.gripper-unavailable { background: #f2f3f6; border-color: #e0e4ea; color: #808b99; cursor: not-allowed; }
+.axis-option.gripper-unavailable small { color: #687486; text-align: right; line-height: 1.4; }
 .axis-option.selected { background: #f3f0ff; border-color: #7770c5; color: #5145a4; }
 .axis-option.selected small { color: #5145a4; }
 .actions { justify-content: flex-end; }
@@ -82,7 +84,13 @@ h1 span { font-size: 13px; font-weight: 400; margin-left: 12px; letter-spacing: 
 .telemetry-advanced { display: grid; gap: 8px; margin: 12px 0 0; font-size: 11px; }
 .telemetry-advanced dt { color: var(--muted); }
 .telemetry-advanced dd { margin: 0 0 8px; font-family: var(--mono); overflow-wrap: anywhere; line-height: 1.7; }
+.pause-banner { margin: 0 0 14px; padding: 12px 15px; border: 1px solid #e4c985; border-radius: 9px; background: #fff6db; color: #6b4b10; font-size: 13px; font-weight: 600; line-height: 1.45; }
 .controls { display: grid; gap: 12px; }
+.control-row.is-paused { background: #f3f4f7; border-color: #e1e4ea; color: #8e96a3; }
+.control-row.is-paused .control-name small, .control-row.is-paused .control-speed { color: #9ba2ae; }
+.move:disabled { background: #eceef2; border-color: #dfe3e9; cursor: not-allowed; }
+.move:disabled img { opacity: .35; }
+.control-speed input:disabled { opacity: .38; cursor: not-allowed; }
 .control-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid #eceaf3; background: #faf9fd; border-radius: 10px; }
 .control-speed { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; }
 .control-speed span { min-width: 190px; }
@@ -90,7 +98,9 @@ h1 span { font-size: 13px; font-weight: 400; margin-left: 12px; letter-spacing: 
 .control-name { display: flex; flex-direction: column; gap: 6px; }
 .control-row strong { font-size: 15px; font-weight: 650; }
 .control-name small { font-size: 10px; color: var(--muted); }
-.move { min-width: 54px; font-size: 21px; padding: 6px 14px; touch-action: none; user-select: none; color: #6356a7; }
+.move { min-width: 54px; padding: 6px 14px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; color: #6356a7; }
+.move img { display: block; width: 24px; height: 24px; margin: auto; pointer-events: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.move:active img { filter: brightness(0) invert(1); }
 .move:hover:not(:disabled) { background: #efecfa; border-color: #b9b1db; }
 .move:active { background: #5145a4; color: #fff; }
 .owners-panel { grid-column: 1/-1; }
@@ -264,3 +274,16 @@ footer { display: flex; align-items: center; justify-content: space-between; gap
   .dashboard .panel { padding: 12px; }
   .system-rail { padding-top: 16px; padding-bottom: 14px; gap: 10px; }
 }
+
+.gripper-actions { display: flex; gap: 10px; margin: 10px 0; }
+.gripper-actions button { flex: 1; }
+.gripper-actions button:disabled { background: #eceef2; color: #89919e; border-color: #dfe3e9; cursor: not-allowed; }
+.gripper-position { font-family: var(--mono); font-weight: 600; }
+
+.task-items { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.task-item { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid #e2e5ed; border-radius: 8px; background: #f8f9fc; font-size: 11px; font-weight: 600; }
+.task-dot { width: 11px; height: 11px; flex: 0 0 11px; border-radius: 50%; }
+
+.task-reset { margin-left: 4px; padding: 4px 8px; border: 1px solid #cbc9e8; border-radius: 6px; background: #f0effa; color: #3932a5; font: inherit; cursor: pointer; }
+.task-reset:disabled { color: #9da5b4; background: #eef0f3; border-color: #e0e4ea; cursor: default; }
+.task-reset:focus-visible { outline: 2px solid #493bc5; outline-offset: 2px; }

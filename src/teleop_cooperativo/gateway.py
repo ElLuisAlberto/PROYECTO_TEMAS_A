@@ -33,6 +33,7 @@ from .local_simulation_runtime import (
     RunnerFault,
 )
 from .simulation_port import TelemetrySample
+from .simulated_gripper import SimulatedGripper
 
 
 PROTOCOL_VERSION = 1
@@ -99,6 +100,7 @@ class CooperativeGateway:
         physical_session: bool = False,
         wait_for_initial_ready: bool = False,
         read_only: bool = False,
+        recovery_bridge = None,
     ) -> None:
         if not isinstance(room_id, str) or not room_id.strip():
             raise ValueError("room_id must be a non-empty string")
@@ -134,6 +136,16 @@ class CooperativeGateway:
         self.anonymous_lan = anonymous_lan
         self.physical_session = physical_session
         self.wait_for_initial_ready = wait_for_initial_ready
+        self.recovery_bridge = recovery_bridge
+        self._fingers_available = False
+        self._sim_gripper = SimulatedGripper() if recovery_bridge is not None else None
+        self._virtual_task = None
+        if self._sim_gripper is not None:
+            try:
+                from .virtual_task import VirtualTask
+                self._virtual_task = VirtualTask()
+            except Exception:
+                logging.exception("No se pudo iniciar el juego virtual; el control continúa disponible")
         self._connections: dict[str, str | None] = {}
         self._remote_control_allowed: dict[str, bool] = {}
         self._sessions: dict[str, _Session] = {}
@@ -181,6 +193,9 @@ class CooperativeGateway:
 
     def fault(self) -> tuple[Axis, ...]:
         """Host-only fail-safe: zero/revoke every axis and block new claims."""
+        if self.recovery_bridge is not None:
+            self.recovery_bridge.recovery_permit(False)
+            self.recovery_bridge.web_permit(False)
         released = self.arbiter.fault()
         self._bump_revision()
         return released
@@ -206,13 +221,23 @@ class CooperativeGateway:
         if session_id is None:
             return self._finish_protocol(message_type, [self._error("hello_required", "send hello before requesting control")])
         role = self._sessions[session_id].role
-        if self.read_only and message_type in {"claim", "input", "release", "rearm", "stop_global"}:
+        if self.read_only and message_type in {"claim", "input", "release", "rearm", "stop_global", "reset_object"}:
             return self._finish_protocol(message_type, [self._error("room_not_operational", "Sesión física de solo lectura")])
         if message_type in {"claim", "input", "release"} and role != "operator":
             return self._finish_protocol(message_type, [self._error("forbidden", "operator role required")])
+        if message_type == "reset_object" and role not in ("operator", "admin"):
+            return self._finish_protocol(message_type, [self._error("forbidden", "operator or admin role required")])
         if message_type in {"stop_global", "rearm"} and role != "admin":
             return self._finish_protocol(message_type, [self._error("forbidden", "admin role required")])
         try:
+            if message_type == "reset_object":
+                index = message.get("object_id")
+                if type(index) is not int or not 0 <= index < 5:
+                    raise ValueError("Muñeco inválido")
+                if self._virtual_task is None or self.arbiter.state not in (RoomState.READY, RoomState.ACTIVE, RoomState.SIM_ONLY):
+                    raise RuntimeError("El juego virtual no está disponible")
+                self._virtual_task.reset_object(index)
+                return self._finish_protocol(message_type, [{"type": "object_reset", "object_id": index}])
             if message_type == "stop_global":
                 self.fault()
                 return self._finish_protocol(message_type, [{"type": "stop_confirmed"}, self.room_state()])
@@ -221,10 +246,18 @@ class CooperativeGateway:
                     raise RuntimeError("room is not in FAULT")
                 if self.telemetry_source is not None and self._fresh_telemetry() is None:
                     raise RuntimeError("fresh telemetry is required before rearming")
-                self.mark_ready()
+                if self._sim_gripper is not None and self.readiness_probe is not None and not self.readiness_probe():
+                    if self._fresh_telemetry() is None:
+                        raise RuntimeError("fresh telemetry is required before rearming")
+                    self.arbiter.mark_simulation_ready()
+                    self._bump_revision()
+                else:
+                    self.mark_ready()
                 return self._finish_protocol(message_type, [{"type": "rearm_confirmed"}, self.room_state()])
             if message_type == "claim":
                 axes = self._axes(message)
+                if Axis.PINZA in axes and not self._fingers_available:
+                    raise ClaimDenied("Pinza sin feedback disponible")
                 leases = self.arbiter.claim(session_id, axes)
                 self._bump_revision()
                 return self._finish_protocol(message_type, [
@@ -271,10 +304,29 @@ class CooperativeGateway:
         runtime_tick: LocalSimulationTick | None = None
         simulator_advanced = False
         sample = self._fresh_telemetry() if self.telemetry_source is not None else None
+        previous_fingers_available = self._fingers_available
+        self._fingers_available = bool(self._sim_gripper is not None and sample is not None)
+        if previous_fingers_available and not self._fingers_available:
+            finger_lease = self.arbiter.leases.lease(Axis.PINZA)
+            if finger_lease is not None:
+                finger_lease.value = 0.0
+                finger_lease.neutral_required = True
         ready = self.readiness_probe is None or (self.readiness_probe() and (self.telemetry_source is None or sample is not None))
-        if self.wait_for_initial_ready and self.arbiter.state is RoomState.NOT_READY and ready:
+        recovery = self.recovery_bridge.recovery_state() if self.recovery_bridge is not None else False
+        if recovery is True and ready and self.arbiter.state in (RoomState.READY, RoomState.ACTIVE):
+            self.arbiter.pause()
+        elif recovery is False and self.arbiter.state is RoomState.PAUSED and ready:
+            self.arbiter.resume()
+        if recovery is None and self.arbiter.state is RoomState.PAUSED:
+            self.fault()
+        if self.recovery_bridge is not None:
+            self.recovery_bridge.recovery_permit(ready and recovery is not None and self.arbiter.state in (RoomState.READY, RoomState.ACTIVE, RoomState.PAUSED))
+            self.recovery_bridge.web_permit(ready and recovery is False and self.arbiter.state in (RoomState.READY, RoomState.ACTIVE))
+        if self.wait_for_initial_ready and self.arbiter.state in (RoomState.NOT_READY, RoomState.SIM_ONLY) and ready:
             self.mark_ready()
-        if self.readiness_probe is not None and not ready and not (self.wait_for_initial_ready and self.arbiter.state is RoomState.NOT_READY):
+        elif self.wait_for_initial_ready and self.arbiter.state is RoomState.NOT_READY and self._fingers_available:
+            self.arbiter.mark_simulation_ready()
+        if self.readiness_probe is not None and not ready and not (self.wait_for_initial_ready and self.arbiter.state in (RoomState.NOT_READY, RoomState.SIM_ONLY)):
             if self.arbiter.state is not RoomState.FAULT:
                 self.fault()
             arbiter_tick = self.arbiter.tick()
@@ -291,11 +343,15 @@ class CooperativeGateway:
         if self.twist_sink is not None:
             try:
                 self.twist_sink(arbiter_tick.twist)
+                if self._sim_gripper is not None:
+                    pinch = self.arbiter.leases.values().get(Axis.PINZA, 0.0) if arbiter_tick.state in (RoomState.READY, RoomState.ACTIVE, RoomState.SIM_ONLY) and self._fingers_available else 0.0
+                    self._sim_gripper.step(pinch)
             except Exception:
                 self.fault()
                 arbiter_tick = self.arbiter.tick()
         changed = bool(
-            arbiter_tick.maintenance.zeroed_axes
+            self._fingers_available != previous_fingers_available
+            or arbiter_tick.maintenance.zeroed_axes
             or arbiter_tick.maintenance.released_axes
             or arbiter_tick.state != before
         )
@@ -319,6 +375,27 @@ class CooperativeGateway:
             # Keeping those concerns separate avoids a silent no-telemetry UI
             # during the normal base-station launch (which has no event log).
             telemetry = self._external_telemetry_payload(arbiter_tick, sample)
+            if self._sim_gripper is not None and sample is not None:
+                telemetry["finger_positions"] = list(self._sim_gripper.positions)
+                telemetry["finger_source"] = "simulated"
+            if self._virtual_task is not None:
+                try:
+                    reset = getattr(self.recovery_bridge, "take_game_reset", lambda: False)()
+                    if reset:
+                        self._virtual_task.reset()
+                    for index in getattr(self.recovery_bridge, "take_object_resets", lambda: ())():
+                        try:
+                            self._virtual_task.reset_object(index)
+                        except ValueError as error:
+                            logging.warning("No se pudo reiniciar el muñeco: %s", error)
+                    telemetry["virtual_task"] = self._virtual_task.update(sample, self._sim_gripper.positions if sample is not None else None)
+                except Exception:
+                    logging.exception("Se detuvo el juego virtual; el control del brazo continúa independiente")
+                    try:
+                        self._virtual_task.close()
+                    except Exception:
+                        pass
+                    self._virtual_task = None
             if self.event_logger is not None:
                 payload = {
                     key: value
@@ -384,6 +461,8 @@ class CooperativeGateway:
                     "pose_age_sec": sample.age_sec,
                 }
             )
+            if sample.finger_positions is not None:
+                payload["finger_positions"] = list(sample.finger_positions)
         return payload
 
     def room_state(self) -> dict[str, object]:
@@ -396,6 +475,7 @@ class CooperativeGateway:
                 "assigned": lease is not None,
                 "owner": session.operator_name if session else None,
                 "generation": lease.generation if lease else None,
+                "available": self._fingers_available if axis is Axis.PINZA else self.arbiter.state is not RoomState.SIM_ONLY,
             }
         return {
             "type": "room_state",
@@ -406,9 +486,9 @@ class CooperativeGateway:
             "axes": axes,
             "modes": {
                 "operator": (
-                    (self.read_only or self.arbiter.state in (RoomState.READY, RoomState.ACTIVE))
+                    (self.read_only or self.arbiter.state in (RoomState.READY, RoomState.ACTIVE, RoomState.SIM_ONLY))
                     and sum(s.role == "operator" for s in self._sessions.values()) < 2
-                    and any(not axis["assigned"] for axis in axes.values())
+                    and any(not axis["assigned"] and axis["available"] for axis in axes.values())
                 ),
                 "observer": True,
                 "admin": (
@@ -842,13 +922,16 @@ def main() -> int:
             logging.error("ROS bridge did not report readiness before timeout")
             ros_sink.close()
             return 2
-        deadline = time.monotonic() + arguments.ros_ready_timeout_sec
-        while ros_sink.telemetry() is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if ros_sink.telemetry() is None:
-            logging.error("ROS telemetry did not become available before timeout")
-            ros_sink.close()
-            return 2
+        # The physical station must stay available while the USB arm is absent.
+        # Readiness remains false until live telemetry actually arrives.
+        if not physical_session:
+            deadline = time.monotonic() + arguments.ros_ready_timeout_sec
+            while ros_sink.telemetry() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if ros_sink.telemetry() is None:
+                logging.error("ROS telemetry did not become available before timeout")
+                ros_sink.close()
+                return 2
     if arguments.local_simulator:
         from .tool_simulator import DeterministicToolSimulator
 
@@ -878,6 +961,7 @@ def main() -> int:
             physical_session=physical_session,
             read_only=arguments.read_only,
             wait_for_initial_ready=arguments.direct_bridge,
+            recovery_bridge=ros_sink if arguments.direct_bridge else None,
         )
     if not arguments.read_only and not arguments.direct_bridge:
         gateway.mark_ready()
@@ -900,6 +984,8 @@ def main() -> int:
         logging.error("%s", error)
         return 2
     finally:
+        if gateway._virtual_task is not None:
+            gateway._virtual_task.close()
         if event_logger is not None:
             event_logger.close()
         if ros_sink is not None:

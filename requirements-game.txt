@@ -1,0 +1,2 @@
+# Motor de física para la tarea de muñecos virtuales.
+pybullet==3.2.7

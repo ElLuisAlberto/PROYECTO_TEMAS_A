@@ -17,6 +17,8 @@ from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
 
 from . import jaco2_kinematics as kin
 from .cad_camera import CadCameraStyle, CadVTKWidget
+from .robot_frames import FINGER_ORIGINS, link_transforms, _origin_transform, finger_link_transform
+from .virtual_task_spec import OBJECTS, INITIAL, GOALS, GOAL_HEIGHTS, _parts
 
 MESH_DIR = (Path(__file__).resolve().parents[2] / "ros2_ws/src/course_teleop_description"
             / "meshes/kinova_j2n6s300")
@@ -32,36 +34,6 @@ LAB_FLOOR_TOP = -0.72
 
 # These fixed finger poses reproduce the zero-angle joints from the Kinova
 # Xacro. Finger motion is intentionally not inferred from six arm joints.
-FINGER_ORIGINS = (
-    ((0.00279, 0.03126, -0.11467), (-1.7047873384941834, 0.6476144647144773, 1.67317415161155)),
-    ((0.02226, -0.02707, -0.11482), (-1.570796327, 0.649262481663582, -1.38614049188413)),
-    ((-0.02226, -0.02707, -0.11482), (-1.570796327, 0.649262481663582, -1.75545216211587)),
-)
-
-
-def link_transforms(joints):
-    """World transforms for base and six links, following the Jaco2 Xacro."""
-    values = kin._validated_joints(joints)
-    result = [np.eye(4)]
-    transform = np.eye(4)
-    for value, (translation, rpy) in zip(values, kin._JOINT_ORIGINS):
-        origin = np.eye(4)
-        origin[:3, :3] = kin._rpy_rotation(rpy)
-        origin[:3, 3] = translation
-        rotation = np.eye(4)
-        rotation[:3, :3] = kin._z_rotation(value)
-        transform = transform @ origin @ rotation
-        result.append(transform.copy())
-    return result
-
-
-def _origin_transform(translation, rpy):
-    result = np.eye(4)
-    result[:3, :3] = kin._rpy_rotation(rpy)
-    result[:3, 3] = translation
-    return result
-
-
 def _load_mesh(path):
     """Load each DAE primitive separately, preserving its authored material."""
     document = collada.Collada(str(path))
@@ -165,7 +137,7 @@ class RobotView(QtWidgets.QFrame):
         self._robot_parts = []
         cache = {}
 
-        def add_mesh(index, name, offset=None):
+        def add_mesh(index, name, offset=None, finger_index=None, distal=False):
             if name not in cache:
                 cache[name] = _load_mesh(MESH_DIR / f"{name}.dae")
             for data, color, specular in cache[name]:
@@ -182,7 +154,7 @@ class RobotView(QtWidgets.QFrame):
                 actor.SetVisibility(False)
                 self.renderer.AddActor(actor)
                 self.actors.append(actor)
-                self._robot_parts.append((actor, index, np.eye(4) if offset is None else offset))
+                self._robot_parts.append((actor, index, np.eye(4) if offset is None else offset, finger_index, distal))
 
         for index, name in enumerate(MESHES):
             add_mesh(index, name)
@@ -190,13 +162,83 @@ class RobotView(QtWidgets.QFrame):
             add_mesh(index, "ring_big")
         for index in (4, 5, 6):
             add_mesh(index, "ring_small")
-        for translation, rpy in FINGER_ORIGINS:
+        for finger_index, (translation, rpy) in enumerate(FINGER_ORIGINS):
             finger = _origin_transform(translation, rpy)
-            add_mesh(6, "finger_proximal", finger)
-            add_mesh(6, "finger_distal", finger @ _origin_transform((0.044, -0.003, 0.0), (0.0, 0.0, 0.0)))
+            add_mesh(6, "finger_proximal", finger, finger_index)
+            add_mesh(6, "finger_distal", finger, finger_index, distal=True)
 
+        self._init_virtual_task()
         self.reset_view(render=False)
         self.widget.Initialize()
+
+    def _init_virtual_task(self):
+        self._task_parts = []
+        self._task_goals = []
+        for index, (spec, goal, height) in enumerate(zip(OBJECTS, GOALS, GOAL_HEIGHTS)):
+            if height > 0:
+                pedestal = self._box((goal[0], goal[1], height / 2), (.094, .094, height), (.72, .75, .79))
+                pedestal.SetVisibility(False); pedestal.PickableOff(); self._task_goals.append(pedestal)
+            disk = vtk.vtkRegularPolygonSource()
+            disk.SetNumberOfSides(48); disk.SetRadius(.045); disk.SetCenter(*goal); disk.SetNormal(0, 0, 1)
+            mapper = vtk.vtkPolyDataMapper(); mapper.SetInputConnection(disk.GetOutputPort())
+            target = vtk.vtkActor(); target.SetMapper(mapper); target.GetProperty().SetColor(*spec['color'])
+            target.GetProperty().SetOpacity(.48); target.SetVisibility(False); target.PickableOff()
+            self.renderer.AddActor(target); self._task_goals.append(target)
+            for part_index, part in enumerate(_parts(spec)):
+                kind = part['shape']
+                if kind == 'box':
+                    source = vtk.vtkCubeSource()
+                    source.SetXLength(2*part['half'][0]); source.SetYLength(2*part['half'][1]); source.SetZLength(2*part['half'][2])
+                elif kind == 'sphere':
+                    source = vtk.vtkSphereSource(); source.SetRadius(part['radius']); source.SetThetaResolution(20); source.SetPhiResolution(16)
+                elif kind == 'capsule':
+                    source = vtk.vtkCapsuleSource(); source.SetRadius(part['radius']); source.SetCylinderLength(part['height']); source.SetThetaResolution(20); source.SetPhiResolution(16)
+                else:
+                    source = vtk.vtkCylinderSource(); source.SetRadius(part['radius']); source.SetHeight(part['height']); source.SetResolution(24)
+                mapper = vtk.vtkPolyDataMapper(); mapper.SetInputConnection(source.GetOutputPort())
+                actor = vtk.vtkActor(); actor.SetMapper(mapper)
+                color = tuple(min(1.0, c + .13) for c in spec['color']) if part_index else spec['color']
+                actor.GetProperty().SetColor(*color); actor.GetProperty().SetAmbient(.35); actor.GetProperty().SetDiffuse(.65)
+                actor.SetVisibility(False); actor.PickableOff(); self.renderer.AddActor(actor)
+                local = np.eye(4); local[:3, 3] = part['center']
+                if kind in ('cylinder', 'capsule'):
+                    local[:3, :3] = np.array([[1,0,0], [0,0,-1], [0,1,0]])
+                self._task_parts.append((actor, index, local))
+            for eye_x in (-.006, .006):
+                eye = vtk.vtkSphereSource(); eye.SetRadius(.0023); eye.SetThetaResolution(12); eye.SetPhiResolution(10)
+                mapper = vtk.vtkPolyDataMapper(); mapper.SetInputConnection(eye.GetOutputPort())
+                actor = vtk.vtkActor(); actor.SetMapper(mapper); actor.GetProperty().SetColor(.08, .09, .13)
+                actor.SetVisibility(False); actor.PickableOff(); self.renderer.AddActor(actor)
+                local = np.eye(4); local[:3, 3] = (eye_x, -.0165, .035)
+                self._task_parts.append((actor, index, local))
+
+    @staticmethod
+    def _task_pose(position, quaternion):
+        x, y, z, w = quaternion
+        norm = math.sqrt(x*x + y*y + z*z + w*w)
+        x, y, z, w = x/norm, y/norm, z/norm, w/norm
+        transform = np.eye(4)
+        transform[:3, :3] = np.array([
+            [1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+            [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+            [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)],
+        ])
+        transform[:3, 3] = position
+        return transform
+
+    def update_task(self, task):
+        if task is None:
+            for actor, _, _ in self._task_parts: actor.SetVisibility(False)
+            for actor in self._task_goals: actor.SetVisibility(False)
+            return
+        poses = {item['id']: self._task_pose(item['position'], item['quaternion_xyzw']) for item in task['objects']}
+        for actor, index, local in self._task_parts:
+            transform = poses[index] @ local
+            matrix = vtk.vtkMatrix4x4()
+            for row in range(4):
+                for column in range(4): matrix.SetElement(row, column, float(transform[row, column]))
+            actor.SetUserMatrix(matrix); actor.SetVisibility(True)
+        for actor in self._task_goals: actor.SetVisibility(True)
 
     @staticmethod
     def _make_wood_texture():
@@ -374,7 +416,7 @@ class RobotView(QtWidgets.QFrame):
         if render:
             self.widget.GetRenderWindow().Render()
 
-    def update_joints(self, joints):
+    def update_joints(self, joints, fingers=None, finger_source=None):
         if joints is None:
             for actor in self.actors:
                 actor.SetVisibility(False)
@@ -385,24 +427,116 @@ class RobotView(QtWidgets.QFrame):
             except (TypeError, ValueError):
                 self.update_joints(None)
                 return
-            for actor, index, offset in self._robot_parts:
+            for actor, index, offset, finger_index, distal in self._robot_parts:
                 transform = transforms[index] @ offset
+                if finger_index is not None:
+                    angle = 0.0 if fingers is None else fingers[finger_index]
+                    transform = finger_link_transform(transforms[index], offset, angle, distal)
                 matrix = vtk.vtkMatrix4x4()
                 for row in range(4):
                     for column in range(4):
                         matrix.SetElement(row, column, float(transform[row, column]))
                 actor.SetUserMatrix(matrix)
                 actor.SetVisibility(True)
-            self.status.setText("EN VIVO · Vista reconstruida · Dedos fijos")
+            finger_status = "SIMULADOS" if fingers is not None and finger_source == "simulated" else "físicos" if fingers is not None and finger_source == "physical" else "sin telemetría verificada"
+            self.status.setText("EN VIVO · Vista reconstruida · Dedos " + finger_status)
         self.renderer.ResetCameraClippingRange()
         self.widget.GetRenderWindow().Render()
+
+
+class RecoveryDialog(QtWidgets.QDialog):
+    """Local hold-to-move controls; loss of focus always releases the jog."""
+    def __init__(self, parent, control):
+        super().__init__(parent)
+        self.control = control
+        self.held = None
+        self.setWindowTitle("JACO2 · Recuperación por articulaciones")
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
+        self.setMinimumWidth(390)
+        layout = QtWidgets.QVBoxLayout(self)
+        title = QtWidgets.QLabel("RECUPERACIÓN POR ARTICULACIONES")
+        title.setObjectName("eyebrow")
+        layout.addWidget(title)
+        help_label = QtWidgets.QLabel("Mantén pulsado − o + para mover un joint. Suelta para detener.")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Velocidad angular"))
+        self.speed = QtWidgets.QDoubleSpinBox()
+        self.speed.setRange(0.1, 5.0)
+        self.speed.setSingleStep(0.5)
+        self.speed.setValue(2.0)
+        self.speed.setSuffix(" °/s")
+        row.addWidget(self.speed)
+        layout.addLayout(row)
+        grid = QtWidgets.QGridLayout()
+        self.positions = []
+        self.buttons = []
+        for i in range(6):
+            grid.addWidget(QtWidgets.QLabel(f"Joint {i + 1}"), i, 0)
+            position = QtWidgets.QLabel("—")
+            self.positions.append(position)
+            grid.addWidget(position, i, 1)
+            for column, sign, text in ((2, -1, "−"), (3, 1, "+")):
+                button = QtWidgets.QPushButton(text)
+                button.setMinimumHeight(36)
+                button.installEventFilter(self)
+                button.pressed.connect(lambda i=i, sign=sign: self.press(i, sign))
+                button.released.connect(self.stop)
+                grid.addWidget(button, i, column)
+                self.buttons.append(button)
+        layout.addLayout(grid)
+        self.status = QtWidgets.QLabel("Esperando modo de recuperación…")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        close = QtWidgets.QPushButton("Cerrar")
+        close.clicked.connect(self.close)
+        layout.addWidget(close)
+
+    def press(self, index, sign):
+        if self.isActiveWindow() and self.buttons[index * 2 + (sign > 0)].isEnabled():
+            self.held = (index, sign)
+
+    def stop(self):
+        if self.held is not None:
+            self.held = None
+            self.control.joint_velocity([0.0] * 6)
+
+    def tick(self, allowed, joints):
+        allowed = allowed and self.isVisible() and self.isActiveWindow()
+        if not allowed:
+            self.stop()
+        for button in self.buttons:
+            button.setEnabled(allowed)
+        for i, label in enumerate(self.positions):
+            label.setText(f"{math.degrees(joints[i]):.1f}°" if joints is not None else "—")
+        self.status.setText("Modo activo · web pausada" if allowed else "Movimiento bloqueado · espera estado operativo")
+        if allowed and self.held is not None:
+            values = [0.0] * 6
+            index, sign = self.held
+            values[index] = sign * math.radians(self.speed.value())
+            self.control.joint_velocity(values)
+
+    def eventFilter(self, watched, event):
+        if watched in self.buttons and event.type() in (QtCore.QEvent.FocusOut, QtCore.QEvent.UngrabMouse, QtCore.QEvent.Hide):
+            self.stop()
+        return super().eventFilter(watched, event)
+
+    def event(self, event):
+        if event.type() in (QtCore.QEvent.WindowDeactivate, QtCore.QEvent.Hide, QtCore.QEvent.Close):
+            self.stop()
+        return super().event(event)
 
 
 class QtDesktopConsole:
     """Fullscreen observer UI with an optional local direct-output switch."""
 
-    def __init__(self, state, observer, direct_bridge=False):
+    def __init__(self, state, observer, direct_bridge=False, physical=False):
         self.state, self.observer = state, observer
+        self.physical = physical
+        self.recovery_dialog = None
+        self.shutdown_locked = False
+        self.shutdown_started = 0.0
         self.output_control = None
         if direct_bridge:
             from .direct_output_control import DirectOutputControl
@@ -410,6 +544,7 @@ class QtDesktopConsole:
         self.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         self.window = QtWidgets.QMainWindow()
         self.window.setWindowTitle("JACO2 · Estación base")
+        self.window.setMinimumSize(1, 1)
         self.window.setStyleSheet("""
             QMainWindow, QWidget#root { background: #eef1f6; }
             QWidget { color: #272641; font-family: "Inter", "Segoe UI", "DejaVu Sans", sans-serif; font-size: 13px; }
@@ -432,15 +567,18 @@ class QtDesktopConsole:
             QPushButton:hover { background: #e5e3f5; border-color: #3935a5; }
             QPushButton:focus { border: 2px solid #5145a4; }
             QPushButton:disabled { color: #929bab; background: #f1f3f6; border-color: #e2e6ec; }
-            QScrollArea { border: none; background: transparent; }
-            QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-            QScrollBar::handle:vertical { background: #c7cfdb; border-radius: 3px; min-height: 28px; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QComboBox {
+                background: #ffffff; color: #272641; border: 1px solid #d5d2ec;
+                border-radius: 8px; padding: 5px 9px;
+            }
+            QComboBox:disabled { color: #929bab; background: #f1f3f6; }
+            QComboBox::drop-down { border: none; width: 24px; }
         """)
         root = QtWidgets.QWidget()
         root.setObjectName("root")
         self.window.setCentralWidget(root)
         outer = QtWidgets.QVBoxLayout(root)
+        outer.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
         outer.setContentsMargins(18, 12, 18, 12)
         outer.setSpacing(10)
 
@@ -462,19 +600,24 @@ class QtDesktopConsole:
         self.view = RobotView()
         content.addWidget(self.view, 1)
 
-        sidebar_scroll = QtWidgets.QScrollArea()
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        sidebar_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        sidebar_scroll.setMinimumWidth(370)
-        sidebar_scroll.setMaximumWidth(450)
-        content.addWidget(sidebar_scroll)
+        # Reflow cards to use the height available without scrolling.
         sidebar = QtWidgets.QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar_scroll.setWidget(sidebar)
-        sidebar_layout = QtWidgets.QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        sidebar_layout.setSpacing(9)
+        self.sidebar = sidebar
+        sidebar.setMinimumWidth(440)
+        sidebar.setMaximumWidth(490)
+        content.addWidget(sidebar)
+        sidebar_grid = QtWidgets.QHBoxLayout(sidebar)
+        self.sidebar_grid = sidebar_grid
+        sidebar_grid.setContentsMargins(0, 0, 0, 0)
+        sidebar_grid.setSpacing(9)
+        controls_column = QtWidgets.QVBoxLayout()
+        info_column = QtWidgets.QVBoxLayout()
+        self.controls_column, self.info_column = controls_column, info_column
+        controls_column.setSpacing(9)
+        info_column.setSpacing(9)
+        sidebar_grid.addLayout(controls_column, 1)
+        sidebar_grid.addLayout(info_column, 1)
 
         status_card, status_layout = self._card()
         self.status_title = self._label("ESTADO DEL ROBOT", "eyebrow")
@@ -488,10 +631,10 @@ class QtDesktopConsole:
         status_row.addWidget(self.room, 1)
         status_row.addWidget(self.health)
         status_layout.addLayout(status_row)
-        sidebar_layout.addWidget(status_card)
+        controls_column.addWidget(status_card)
         if self.output_control is not None:
             output_card, output_layout = self._card()
-            output_layout.addWidget(self._label("SALIDA DEL BRIDGE DIRECTO", "eyebrow"))
+            output_layout.addWidget(self._label("CONTROL DEL BRAZO", "eyebrow"))
             self.output_status = self._label("Esperando estado…", "section")
             self.output_status.setWordWrap(True)
             output_layout.addWidget(self.output_status)
@@ -502,31 +645,93 @@ class QtDesktopConsole:
             self.output_detail = self._label("El armado se realiza en esta estación.", "caption")
             self.output_detail.setWordWrap(True)
             output_layout.addWidget(self.output_detail)
-            sidebar_layout.addWidget(output_card)
+            if self.physical:
+                self.usb_status = self._label("Esperando estado USB…", "caption")
+                self.usb_status.setWordWrap(True)
+                output_layout.addWidget(self.usb_status)
+                usb_buttons = QtWidgets.QHBoxLayout()
+                self.reconnect_button = QtWidgets.QPushButton("Detectar USB")
+                self.reconnect_button.setToolTip("Detectar y conectar el brazo por USB")
+                self.reconnect_button.setEnabled(False)
+                self.reconnect_button.clicked.connect(self.output_control.reconnect)
+                usb_buttons.addWidget(self.reconnect_button)
+                self.disconnect_button = QtWidgets.QPushButton("Desconectar USB")
+                self.disconnect_button.setToolTip("Desconectar el brazo de forma segura")
+                self.disconnect_button.setEnabled(False)
+                self.disconnect_button.clicked.connect(self.output_control.disconnect)
+                usb_buttons.addWidget(self.disconnect_button)
+                output_layout.addLayout(usb_buttons)
+                self.recovery_status = self._label("Recuperación desactivada", "caption")
+                self.recovery_status.setWordWrap(True)
+                output_layout.addWidget(self.recovery_status)
+                recovery_buttons = QtWidgets.QHBoxLayout()
+                self.recovery_button = QtWidgets.QPushButton("Activar recuperación")
+                self.recovery_button.setToolTip("Activar o desactivar la recuperación por articulaciones")
+                self.recovery_button.clicked.connect(self.toggle_recovery)
+                recovery_buttons.addWidget(self.recovery_button)
+                self.recovery_window_button = QtWidgets.QPushButton("Controles de joints")
+                self.recovery_window_button.clicked.connect(self.open_recovery)
+                recovery_buttons.addWidget(self.recovery_window_button)
+                output_layout.addLayout(recovery_buttons)
+            controls_column.addWidget(output_card)
+
+        if self.output_control is not None:
+            shutdown_card, shutdown_layout = self._card()
+            shutdown_layout.addWidget(self._label("FINALIZAR SESIÓN", "eyebrow"))
+            self.shutdown_button = QtWidgets.QPushButton("Cerrar estación de forma segura")
+            self.shutdown_button.setStyleSheet("QPushButton { background: #fff0f1; color: #8e2634; border: 1px solid #d9a9ae; } QPushButton:disabled { background: #eef0f3; color: #737d8b; border-color: #d6dbe2; }")
+            self.shutdown_button.clicked.connect(self.shutdown_station)
+            shutdown_layout.addWidget(self.shutdown_button)
+            self.shutdown_detail = self._label("Detiene la salida y cierra el brazo, la web y ROS 2 de esta estación.", "caption")
+            self.shutdown_detail.setWordWrap(True)
+            shutdown_layout.addWidget(self.shutdown_detail)
+            controls_column.addWidget(shutdown_card)
+
+        task_card, task_layout = self._card()
+        task_layout.addWidget(self._label("TAREA COOPERATIVA · VIRTUAL", "eyebrow"))
+        self.task_status = self._label("Esperando juego…", "section")
+        self.task_status.setWordWrap(True); task_layout.addWidget(self.task_status)
+        self.task_detail = self._label("Lleva cada muñeco al círculo de su color.", "caption")
+        self.task_detail.setWordWrap(True); task_layout.addWidget(self.task_detail)
+        if self.output_control is not None:
+            self.task_object = QtWidgets.QComboBox()
+            for spec in OBJECTS:
+                self.task_object.addItem(spec["name"])
+            task_row = QtWidgets.QHBoxLayout()
+            task_row.addWidget(self.task_object, 1)
+            self.task_reset_one = QtWidgets.QPushButton("Reiniciar muñeco")
+            self.task_reset_one.setToolTip("Devolver el muñeco seleccionado a su posición inicial")
+            self.task_reset_one.clicked.connect(self.reset_selected_object)
+            task_row.addWidget(self.task_reset_one)
+            task_layout.addLayout(task_row)
+            self.task_reset = QtWidgets.QPushButton("Reiniciar objetos virtuales")
+            self.task_reset.clicked.connect(self.output_control.reset_game)
+            task_layout.addWidget(self.task_reset)
+        info_column.addWidget(task_card)
 
         telemetry_card, telemetry_layout = self._card()
         self.telemetry_title = self._label("TELEMETRÍA EN VIVO", "eyebrow")
         telemetry_layout.addWidget(self.telemetry_title)
-        telemetry_layout.addWidget(self._label("Estado en tiempo real", "section"))
         metrics = QtWidgets.QGridLayout()
-        metrics.setHorizontalSpacing(12)
-        metrics.setVerticalSpacing(5)
+        metrics.setHorizontalSpacing(8)
+        metrics.setVerticalSpacing(6)
         self.fields = {}
         for row, (key, title) in enumerate((
-            ("position", "Posición world (m)"),
-            ("quaternion", "Orientación xyzw"),
-            ("linear", "Velocidad lineal comandada (m/s)"),
-            ("angular", "Velocidad angular comandada (rad/s)"),
-            ("joints", "Articulaciones (rad)"),
+            ("position", "Posición (m)"),
+            ("quaternion", "Orientación"),
+            ("linear", "Vel. lineal (m/s)"),
+            ("angular", "Vel. angular (rad/s)"),
+            ("joints", "Joints (rad)"),
+            ("fingers", "Dedos sim. (rad)"),
         )):
             label = self._label(title, "caption")
             value = self._label("—", "value")
             value.setWordWrap(True)
-            metrics.addWidget(label, row * 2, 0)
-            metrics.addWidget(value, row * 2 + 1, 0)
+            metrics.addWidget(label, row, 0)
+            metrics.addWidget(value, row, 1)
             self.fields[key] = value
         telemetry_layout.addLayout(metrics)
-        sidebar_layout.addWidget(telemetry_card)
+        info_column.addWidget(telemetry_card)
 
         axes_card, axes_layout = self._card()
         axes_layout.addWidget(self._label("TRABAJO COOPERATIVO", "eyebrow"))
@@ -535,22 +740,32 @@ class QtDesktopConsole:
         axes_grid.setHorizontalSpacing(12)
         axes_grid.setVerticalSpacing(7)
         self.owners = {}
-        for index, axis in enumerate(("X", "Y", "Z", "ROLL", "PITCH", "YAW")):
+        for index, axis in enumerate(("X", "Y", "Z", "ROLL", "PITCH", "YAW", "PINZA")):
             label = self._label(f"{axis}  ·  Disponible", "owner")
             label.setTextInteractionFlags(QtCore.Qt.NoTextInteraction)
             label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
             axes_grid.addWidget(label, index // 2, index % 2)
             self.owners[axis] = label
         axes_layout.addLayout(axes_grid)
-        sidebar_layout.addWidget(axes_card)
+        info_column.addWidget(axes_card)
 
         event_card, event_layout = self._card()
         event_layout.addWidget(self._label("ÚLTIMO EVENTO", "eyebrow"))
         self.event = self._label("Sin eventos recientes", "caption")
         self.event.setWordWrap(True)
         event_layout.addWidget(self.event)
-        sidebar_layout.addWidget(event_card)
-        sidebar_layout.addStretch(1)
+        info_column.addWidget(event_card)
+        self._main_cards = [status_card]
+        if self.output_control is not None:
+            self._main_cards.append(output_card)
+        self._main_cards += [task_card, telemetry_card, axes_card, event_card]
+        if self.output_control is not None:
+            self._main_cards.append(shutdown_card)
+        self._wide_cards = [task_card, telemetry_card, event_card]
+        if self.output_control is not None:
+            self._wide_cards.append(shutdown_card)
+        self._single_column = None
+        self._reflow_cards(1080)
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.refresh)
@@ -558,6 +773,32 @@ class QtDesktopConsole:
             shortcut = QtWidgets.QShortcut(QtGui.QKeySequence(key), self.window)
             shortcut.activated.connect(self.toggle_fullscreen)
         self.window.closeEvent = self.close_event
+        self.window.resizeEvent = self.resize_event
+
+    def _reflow_cards(self, height):
+        single = height >= 950
+        if single == self._single_column:
+            return
+        self._single_column = single
+        for card in self._main_cards:
+            self.controls_column.removeWidget(card)
+            self.info_column.removeWidget(card)
+        if single:
+            self.sidebar.setMinimumWidth(440)
+            self.sidebar.setMaximumWidth(490)
+            for card in self._main_cards:
+                self.controls_column.addWidget(card)
+            self.sidebar_grid.removeItem(self.info_column)
+        else:
+            self.sidebar.setMaximumWidth(760)
+            self.sidebar.setMinimumWidth(660)
+            self.sidebar_grid.addLayout(self.info_column, 1)
+            for card in self._main_cards:
+                (self.info_column if card in self._wide_cards else self.controls_column).addWidget(card)
+
+    def resize_event(self, event):
+        self._reflow_cards(event.size().height())
+        QtWidgets.QMainWindow.resizeEvent(self.window, event)
 
     @staticmethod
     def _label(text, name):
@@ -570,8 +811,8 @@ class QtDesktopConsole:
         frame = QtWidgets.QFrame()
         frame.setObjectName("card")
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(5)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(4)
         return frame, layout
 
     def toggle_fullscreen(self):
@@ -598,7 +839,73 @@ class QtDesktopConsole:
                 return
         self.output_control.request(not enabled)
 
+    def reset_selected_object(self):
+        index = self.task_object.currentIndex()
+        task = self.state.snapshot().virtual_task
+        if task is None:
+            return
+        if any(item['id'] != index and math.dist(item['position'], INITIAL[index]) < .09 for item in task['objects']):
+            QtWidgets.QMessageBox.information(self, "Posición ocupada", "Otro muñeco ocupa la posición inicial. Retíralo antes de reiniciar este muñeco.")
+            return
+        self.output_control.reset_object(index)
+
+    def toggle_recovery(self):
+        control = self.output_control
+        active = control.recovery_state()
+        if active is None:
+            return
+        if self.recovery_dialog is not None:
+            self.recovery_dialog.stop()
+        control.set_recovery(not active)
+
+    def open_recovery(self):
+        if self.recovery_dialog is None:
+            self.recovery_dialog = RecoveryDialog(self.window, self.output_control)
+        self.recovery_dialog.show()
+        self.recovery_dialog.raise_()
+        self.recovery_dialog.activateWindow()
+
+    def shutdown_station(self):
+        if self.output_control is None or self.output_control.shutdown_future is not None:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self.window, "Cerrar estación", "¿Detener el brazo y cerrar la estación, la web y sus procesos ROS 2?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        if self.recovery_dialog is not None:
+            self.recovery_dialog.stop()
+        if self.output_control.prepare_shutdown():
+            self.shutdown_locked = True
+            self.shutdown_started = time.monotonic()
+            self.shutdown_button.setEnabled(False)
+        self.shutdown_detail.setText(self.output_control.shutdown_message)
+
+    def _finish_shutdown_if_ready(self):
+        control = self.output_control
+        if not self.shutdown_locked:
+            return
+        if control.shutdown_result is True:
+            # Avoid retrying the signal if the launcher is already shutting down.
+            control.shutdown_result = None
+            try:
+                from .station_shutdown import signal_station_launcher
+                signal_station_launcher()
+                self.shutdown_detail.setText("Cerrando los servicios de la estación…")
+            except RuntimeError as error:
+                self.shutdown_detail.setText(str(error))
+                self.shutdown_button.setEnabled(True)
+            return
+        if control.shutdown_result is False:
+            control.shutdown_result = None
+            self.shutdown_detail.setText(control.shutdown_message)
+            self.shutdown_button.setEnabled(True)
+        elif control.shutdown_future is not None and time.monotonic() - self.shutdown_started > 8:
+            self.shutdown_detail.setText("Esperando confirmación del bridge. No retire el cable todavía.")
+
     def close_event(self, event):
+        if self.recovery_dialog is not None:
+            self.recovery_dialog.stop()
         self.timer.stop()
         if self.output_control is not None:
             self.output_control.close()
@@ -614,17 +921,55 @@ class QtDesktopConsole:
         snap = self.state.snapshot()
         if self.output_control is not None:
             enabled = self.output_control.poll()
+            self._finish_shutdown_if_ready()
             self.output_status.setText("Estado desconocido" if enabled is None else "Salida armada" if enabled else "Salida desarmada")
             self.output_status.setStyleSheet("color: " + ("#8a5c16" if enabled is None else "#a4343f" if enabled else "#257251"))
+            color = "#b32332" if enabled else "#f4cdd0" if enabled is False else "#e5e7eb"
+            foreground = "#ffffff" if enabled else "#64202a" if enabled is False else "#555e6e"
+            self.output_button.setStyleSheet(f"QPushButton {{ background: {color}; color: {foreground}; border: 1px solid #b65a64; }} QPushButton:disabled {{ background: #e8e8ed; color: #666d7a; border-color: #cbd0d8; }}")
             self.output_button.setText("Esperando estado…" if enabled is None else "Desarmar salida" if enabled else "Armar salida")
             self.output_button.setEnabled(enabled is not None and self.output_control.future is None and (enabled or snap.connected))
+            if self.physical:
+                usb = self.output_control.usb_state()
+                self.usb_status.setText("USB conectado" if usb is True else "USB desconectado" if usb is False else "Estado USB no disponible")
+                self.reconnect_button.setEnabled(usb is False and self.output_control.reconnect_future is None and self.output_control.disconnect_future is None and time.monotonic() - self.output_control.reconnect_at >= 1.0)
+                self.disconnect_button.setEnabled(usb is True and self.output_control.disconnect_future is None and self.output_control.reconnect_future is None and self.output_control.future is None)
+                if self.output_control.disconnect_future is not None:
+                    self.output_button.setEnabled(False)
+                if self.output_control.reconnect_message:
+                    self.usb_status.setText(self.usb_status.text() + " · " + self.output_control.reconnect_message)
+                if usb is not True and not enabled:
+                    self.output_button.setEnabled(False)
+            if self.physical:
+                active = self.output_control.recovery_state()
+                if active and snap.connected and snap.room_state != "FAULT":
+                    self.output_control.heartbeat()
+                available = active is not None and self.output_control.recovery_future is None and snap.connected
+                can_enter = enabled is True and usb is True and snap.room_state in ("READY", "ACTIVE")
+                returning = self.output_control.recovery_returning
+                self.recovery_button.setEnabled(available and not returning and (active or can_enter))
+                self.recovery_button.setText("Restableciendo web…" if returning else "Desactivar recuperación" if active else "Activar recuperación")
+                self.recovery_window_button.setEnabled(active is True and not returning and snap.room_state == "PAUSED" and enabled is True)
+                mode_text = "Recuperación activa · web pausada" if active else "Recuperación desactivada" if active is False else "Esperando estado de recuperación"
+                self.recovery_status.setText(mode_text + (" · " + self.output_control.recovery_message if self.output_control.recovery_message else ""))
+                if self.recovery_dialog is not None:
+                    age = None if snap.updated_monotonic is None else (snap.telemetry_age_sec or 0) + max(0, time.monotonic() - snap.updated_monotonic)
+                    live = snap.connected and age is not None and age <= STALE_SEC and snap.joint_positions is not None
+                    self.recovery_dialog.tick(active is True and not returning and enabled is True and snap.room_state == "PAUSED" and live, snap.joint_positions if live else None)
             result_messages = {"enabled": "Salida armada correctamente.", "disabled": "Salida desarmada correctamente.", "unchanged": "El estado de la salida no cambió."}
             detail = result_messages.get(self.output_control.message, self.output_control.message) or "El armado se realiza en esta estación."
             if snap.room_state == "FAULT":
                 detail += " La sala está en fallo; requiere rearme de administrador."
             self.output_detail.setText(detail)
+        if self.output_control is not None and self.shutdown_locked:
+            self.output_button.setEnabled(False)
+            if self.physical:
+                for button in (self.reconnect_button, self.disconnect_button, self.recovery_button, self.recovery_window_button):
+                    button.setEnabled(False)
+                if self.recovery_dialog is not None:
+                    self.recovery_dialog.tick(False, None)
         self.connection.setText(snap.connection_label)
-        room_labels = {"NOT_READY": "Esperando armado", "READY": "Lista", "ACTIVE": "En operación", "FAULT": "Fallo"}
+        room_labels = {"NOT_READY": "Esperando armado", "READY": "Lista", "ACTIVE": "En operación", "FAULT": "Fallo", "PAUSED": "Web pausada", "SIM_ONLY": "Solo pinza simulada"}
         self.room.setText(f"Sala {snap.room_id}\n{room_labels.get(snap.room_state, snap.room_state)}")
         age = None if snap.updated_monotonic is None else (snap.telemetry_age_sec or 0) + max(0, time.monotonic() - snap.updated_monotonic)
         fresh = snap.connected and age is not None and age <= STALE_SEC and snap.telemetry_source in ("ros_gazebo_jaco2_fk", "ros_physical_jaco2_fk", "ros_mock_jaco2_fk") and snap.joint_positions is not None
@@ -651,11 +996,24 @@ class QtDesktopConsole:
         else:
             self.health.setText("Telemetría no disponible")
         for name, value in (("position", snap.position), ("quaternion", snap.quaternion),
-                            ("linear", snap.linear), ("angular", snap.angular), ("joints", snap.joint_positions)):
+                            ("linear", snap.linear), ("angular", snap.angular), ("joints", snap.joint_positions), ("fingers", snap.finger_positions)):
             self.fields[name].setText(self.format_vector(value if fresh else None))
         for axis, label in self.owners.items():
             text = f"{axis}  ·  {snap.owners.get(axis, 'Disponible')}"
             label.setToolTip(text)
             label.setText(label.fontMetrics().elidedText(text, QtCore.Qt.ElideRight, max(label.width(), 20)))
         self.event.setText(snap.events[0] if snap.events else "Sin eventos recientes")
-        self.view.update_joints(snap.joint_positions if fresh else None)
+        task = snap.virtual_task if snap.connected else None
+        self.task_status.setText(f"Muñecos entregados: {task['delivered']} / 5" if task is not None else "Juego virtual no disponible")
+        if task is not None and task['held'] is not None:
+            self.task_detail.setText(f"Sujetando: {OBJECTS[task['held']]['name']} · llévalo a su círculo.")
+        elif task is not None and task.get("release_reason") == "impacto":
+            self.task_detail.setText("Muñeco soltado por presión. Abre la pinza antes de sujetarlo de nuevo.")
+        else:
+            self.task_detail.setText("Lleva cada muñeco a su círculo. El agarre es virtual; los contactos no detienen el brazo físico." if self.physical else "Lleva cada muñeco al círculo de su color. El agarre es virtual y asistido.")
+        if self.output_control is not None:
+            self.task_reset.setEnabled(task is not None and not self.shutdown_locked)
+            self.task_reset_one.setEnabled(task is not None and not self.shutdown_locked)
+            self.task_object.setEnabled(task is not None and not self.shutdown_locked)
+        self.view.update_task(task)
+        self.view.update_joints(snap.joint_positions if fresh else None, snap.finger_positions if fresh else None, snap.finger_source if fresh else None)

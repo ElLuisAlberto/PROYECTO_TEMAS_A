@@ -16,6 +16,7 @@ class Axis(str, Enum):
     ROLL = "ROLL"
     PITCH = "PITCH"
     YAW = "YAW"
+    PINZA = "PINZA"
 
     @classmethod
     def parse(cls, value: "Axis | str") -> "Axis":

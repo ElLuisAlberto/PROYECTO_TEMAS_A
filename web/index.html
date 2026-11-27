@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>JACO2 · Teleoperación cooperativa</title>
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+  <link rel="stylesheet" href="styles.css?v=reinicio-5">
+  <script src="app.js?v=reinicio-5" defer></script>
 </head>
 <body>
 <main class="app">
@@ -14,9 +14,9 @@
     <p class="rail-heading">Estación cooperativa</p>
     <div class="rail-connection"><span id="connection" class="badge">Conectando…</span></div>
     <div class="axis-summary">
-      <div class="axis-ring" id="axis-summary" role="progressbar" aria-label="Ejes reservados" aria-valuemin="0" aria-valuemax="6" aria-valuetext="Esperando datos">
+      <div class="axis-ring" id="axis-summary" role="progressbar" aria-label="Ejes reservados" aria-valuemin="0" aria-valuemax="7" aria-valuetext="Esperando datos">
         <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-track" cx="60" cy="60" r="50"/><circle id="axis-ring-fill" class="ring-fill" cx="60" cy="60" r="50" pathLength="100" stroke-dasharray="0 100"/></svg>
-        <div class="ring-value"><strong id="reserved-count">—</strong><span>/ 6</span></div>
+        <div class="ring-value"><strong id="reserved-count">—</strong><span>/ 7</span></div>
       </div>
       <p class="rail-caption">Ejes reservados</p>
       <p id="rail-note" class="rail-note">Esperando estado de la simulación.</p>
@@ -26,6 +26,7 @@
   </aside>
   <div class="workspace">
   <header class="topbar"><div><h2>Teleoperación cooperativa</h2></div><button id="home" class="ghost" hidden>← Cambiar modo</button></header>
+    <p id="pause-banner" class="pause-banner" role="status" aria-live="polite" hidden>Operación web pausada: la estación madre está controlando los joints. Tus controles se habilitarán automáticamente al terminar.</p>
   <section id="workspace-intro" class="workspace-intro" aria-label="Selección de modo">
     <div class="intro-copy"><span class="eyebrow">PASO 01/02</span><h2>Elige tu modo de participación</h2><p>Selecciona un modo, revisa su disponibilidad y confírmalo para continuar.</p></div>
     <svg class="robot-illustration" viewBox="0 0 320 180" aria-hidden="true">
@@ -56,7 +57,9 @@
     <div class="dashboard-head"><div><span class="eyebrow" id="dashboard-kicker">SIMULACIÓN</span><h2 id="dashboard-title">Estado del brazo</h2></div><span id="room-state" class="badge">—</span></div>
     <div class="dashboard-grid">
       <article id="operator-panel" class="panel" hidden><div class="panel-head"><div><span class="eyebrow">TUS COMPONENTES</span><h3>Control cartesiano</h3></div><span class="hint">Mantén pulsado para mover</span></div><div id="controls" class="controls"></div></article>
+      <article id="gripper-panel" class="panel gripper-panel" aria-labelledby="gripper-title"><div class="panel-head"><div><span class="eyebrow">PINZA SIMULADA · TRES DEDOS</span><h3 id="gripper-title">Dedos simulados</h3></div><span class="badge" id="gripper-status">Sin datos</span></div><p class="hint">Posición simulada de los dedos proximales (rad)</p><p id="gripper-position" class="gripper-position">—</p><p class="hint">Selecciona PINZA · SIMULADA y mantén + para cerrar o − para abrir. Los dedos y el agarre son virtuales; no mueven ni miden los dedos físicos.</p></article>
       <article id="admin-panel" class="panel" hidden><span class="eyebrow">ADMINISTRACIÓN</span><h3 id="admin-title">Seguridad de la simulación</h3><p>STOP detiene el movimiento y libera todas las reservas. No es un paro físico.</p><div class="admin-actions"><button id="stop" class="danger">■ STOP global</button><button id="rearm" class="ghost">Rearmar</button></div></article>
+      <article class="panel task-panel"><div class="panel-head"><div><span class="eyebrow">TAREA COOPERATIVA · VIRTUAL</span><h3>Traslado de muñecos</h3></div><span id="task-progress" class="badge">— / 5</span></div><p id="task-description" class="hint">Lleva cada muñeco al círculo de su color. La pinza y los objetos son virtuales. Usa Reiniciar en cada muñeco para devolverlo a su posición inicial.</p><div id="task-items" class="task-items"></div><p id="task-note" class="hint">Esperando el juego virtual…</p></article>
       <article class="panel telemetry"><div class="panel-head"><div><span class="eyebrow">ESTADO DEL BRAZO</span><h3>Telemetría</h3></div><span id="telemetry-status" class="badge">Sin datos</span></div><div id="telemetry" class="telemetry-values"></div><details class="telemetry-details"><summary>Orientación y articulaciones</summary><dl id="telemetry-advanced" class="telemetry-advanced"></dl></details><p id="telemetry-note" class="hint">Esperando datos de la madre.</p></article>
       <article class="panel owners-panel"><span class="eyebrow">ESTADO COMPARTIDO</span><h3>Disponibilidad de ejes</h3><div id="owners" class="owners"></div></article>
     </div>

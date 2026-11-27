@@ -30,6 +30,7 @@ class Lease:
     last_input_monotonic: float
     last_heartbeat_monotonic: float
     value: float = 0.0
+    neutral_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,12 @@ class LeaseManager:
 
         timestamp = self._timestamp(now)
         for lease, value in validated:
-            lease.value = value
+            if lease.neutral_required:
+                if value == 0.0:
+                    lease.neutral_required = False
+                lease.value = 0.0
+            else:
+                lease.value = value
             lease.last_input_monotonic = timestamp
         for lease in self._leases.values():
             if lease.session_id == session:
@@ -175,6 +181,12 @@ class LeaseManager:
                 del self._leases[axis]
                 released.append(axis)
         return tuple(released)
+
+    def suspend_all(self) -> None:
+        """Stop commands, retain live leases and require neutral on resume."""
+        for lease in self._leases.values():
+            lease.value = 0.0
+            lease.neutral_required = True
 
     def stop_all(self) -> tuple[Axis, ...]:
         """Clear every command and revoke every lease."""

@@ -1,14 +1,14 @@
 /* A staged, single-screen remote client for the simulated Jaco2 gateway. */
 (() => {
   "use strict";
-  const AXES = ["X", "Y", "Z", "ROLL", "PITCH", "YAW"];
+  const AXES = ["X", "Y", "Z", "ROLL", "PITCH", "YAW", "PINZA"];
   const el = (id) => document.getElementById(id);
   const ui = Object.fromEntries([
     "connection", "endpoint", "system-log", "axis-summary", "axis-ring-fill", "reserved-count", "rail-note", "workspace-intro", "home", "modes", "selection", "dashboard", "mode-message", "mode-description", "confirm-mode",
     "axis-options", "count", "enter", "back", "selection-message",
     "dashboard-kicker", "dashboard-title", "room-state", "operator-panel",
     "admin-panel", "controls", "telemetry-status", "telemetry", "telemetry-note",
-    "owners", "dashboard-message", "stop", "rearm", "telemetry-advanced", "admin-credential", "admin-token",
+    "owners", "dashboard-message", "pause-banner", "gripper-status", "gripper-position", "task-progress", "task-items", "task-note", "task-description", "stop", "rearm", "telemetry-advanced", "admin-credential", "admin-token",
   ].map((id) => [id, el(id)]));
   const identity = Math.random().toString(36).slice(2, 8).toUpperCase();
   const state = {
@@ -16,7 +16,7 @@
     axes: {}, modes: {}, room: null, revision: -1, selected: new Set(),
     leases: new Map(), values: new Map(), speeds: new Map(), grantRevision: -1,
     sequence: 0, heartbeat: null, input: null, retry: null,
-    pendingClaim: false, telemetry: null, selectedRole: null,
+    pendingClaim: false, telemetry: null, selectedRole: null, gripperSimulation: false,
   };
   const ROLE_NAMES = { operator: "Operador", observer: "Observador", admin: "Administrador" };
   let physical = false, readOnly = false;
@@ -34,7 +34,7 @@
     ui["system-log"].textContent = `${time} · ${text}`;
   }
   function renderRail() {
-    const known = Boolean(state.connected && state.session && AXES.every((axis) => state.axes[axis] && typeof state.axes[axis].assigned === "boolean"));
+    const known = Boolean(state.connected && state.session && AXES.slice(0, 6).every((axis) => state.axes[axis] && typeof state.axes[axis].assigned === "boolean"));
     const reserved = known ? AXES.filter((axis) => state.axes[axis].assigned).length : 0;
     ui["reserved-count"].textContent = known ? String(reserved) : "—";
     ui["axis-ring-fill"].setAttribute("stroke-dasharray", `${reserved / AXES.length * 100} 100`);
@@ -42,7 +42,7 @@
     if (known) ui["axis-summary"].setAttribute("aria-valuenow", String(reserved));
     else ui["axis-summary"].removeAttribute("aria-valuenow");
     const subject = physical ? "Brazo físico" : "Simulación";
-    const roomLabels = {READY:`${subject} listo para operar.`, ACTIVE:"Control cooperativo en curso.", FAULT:`${subject} · movimiento bloqueado.`, NOT_READY:`${subject} todavía no está listo.`};
+    const roomLabels = {SIM_ONLY:"Pinza simulada disponible · salida física desarmada.", PAUSED:"Control web pausado: recuperación por articulaciones en la estación madre.", READY:`${subject} listo para operar.`, ACTIVE:"Control cooperativo en curso.", FAULT:`${subject} · movimiento bloqueado.`, NOT_READY:`${subject} todavía no está listo.`};
     ui["rail-note"].textContent = !known ? `Esperando estado: ${subject}.` : roomLabels[state.room] || "Estado recibido de la computadora madre.";
   }
   function status(text, kind = "") {
@@ -60,8 +60,11 @@
     clearInterval(state.heartbeat); clearInterval(state.input);
     state.heartbeat = state.input = null;
   }
+  function motionAllowed(axis = null) {
+    return state.connected && state.session && (state.room === "READY" || state.room === "ACTIVE" || (state.room === "SIM_ONLY" && (axis === null || axis === "PINZA")));
+  }
   function sendInputs() {
-    if (state.role !== "operator" || !state.session || !state.leases.size) return;
+    if (state.role !== "operator" || !motionAllowed() || !state.leases.size) return;
     const values = {}, leases = {};
     for (const [axis, lease] of state.leases) {
       values[axis] = state.values.get(axis) || 0;
@@ -126,7 +129,7 @@
       if (state.socket !== socket) return;
       stopTimers(); state.socket = null; state.connected = false; state.session = null;
       state.leases.clear(); state.values.clear(); state.pendingClaim = false;
-      state.axes = {}; state.modes = {}; state.room = null; state.telemetry = null;
+      state.axes = {}; state.modes = {}; state.room = null; state.telemetry = null; state.gripperSimulation = false;
       state.selectedRole = null;
       status("Desconectado", "bad");
       show("modes"); renderModes(); renderTelemetry();
@@ -174,16 +177,16 @@
     ui["axis-options"].replaceChildren();
     for (const axis of AXES) {
       const item = state.axes[axis];
-      const taken = !item || item.assigned === true;
+      const taken = !item || item.assigned === true || item.available === false || (axis === "PINZA" && !state.gripperSimulation);
       if (taken) state.selected.delete(axis);
       const button = document.createElement("button");
       button.dataset.axis = axis;
       button.className = "axis-option" + (state.selected.has(axis) ? " selected" : "");
-      button.disabled = taken || !state.session || state.room === "FAULT" || state.room === "NOT_READY";
+      button.disabled = taken || !state.session || state.room === "FAULT" || state.room === "NOT_READY" || state.room === "PAUSED";
       button.setAttribute("aria-pressed", String(state.selected.has(axis)));
-      const name = document.createElement("span"); name.textContent = axis;
+      const name = document.createElement("span"); name.textContent = axis === "PINZA" ? "PINZA · SIMULADA" : axis;
       const note = document.createElement("small");
-      note.textContent = !item ? "Sin datos" : taken ? `Ocupado · ${item.owner || "otro equipo"}` : state.selected.has(axis) ? "Seleccionado" : "Disponible";
+      note.textContent = !item ? (axis === "PINZA" ? "Sin lectura disponible" : "Sin datos") : (item.available === false || (axis === "PINZA" && !state.gripperSimulation)) ? (axis === "PINZA" ? "Simulación no disponible" : "Salida física desarmada") : taken ? `Ocupado · ${item.owner || "otro equipo"}` : state.selected.has(axis) ? "Seleccionado" : "Disponible";
       button.append(name, note);
       button.addEventListener("click", () => {
         if (state.selected.has(axis)) state.selected.delete(axis);
@@ -195,18 +198,18 @@
       if (axis === focusAxis && !button.disabled) button.focus();
     }
     ui.count.textContent = `${state.selected.size} / 3 seleccionados`;
-    ui.enter.disabled = !state.selected.size || !state.session || state.room === "FAULT" || state.room === "NOT_READY";
+    ui.enter.disabled = !state.selected.size || !state.session || state.room === "FAULT" || state.room === "NOT_READY" || state.room === "PAUSED";
   }
   function renderOwners() {
     ui.owners.replaceChildren();
     for (const axis of AXES) {
       const item = state.axes[axis];
       const row = document.createElement("div");
-      const ownership = !item ? "unknown" : state.leases.has(axis) ? "mine" : item.assigned ? "taken" : "free";
+      const ownership = !item || item.available === false ? "unknown" : state.leases.has(axis) ? "mine" : item.assigned ? "taken" : "free";
       row.className = `owner is-${ownership}`;
       const name = document.createElement("strong"); name.textContent = axis;
       const owner = document.createElement("span");
-      owner.textContent = !item ? "Sin datos" : state.leases.has(axis) ? "Tú" : item.assigned ? `Ocupado · ${item.owner || "otro equipo"}` : "Disponible";
+      owner.textContent = !item ? "Sin datos" : item.available === false ? "No disponible" : state.leases.has(axis) ? "Tú" : item.assigned ? `Ocupado · ${item.owner || "otro equipo"}` : "Disponible";
       row.append(name, owner); ui.owners.append(row);
     }
   }
@@ -214,12 +217,54 @@
     return Array.isArray(value) && value.length === size && value.every(Number.isFinite)
       ? value.map((n) => n.toFixed(3)).join("  ") : "—";
   }
+  function renderTask(task) {
+    const items = Array.isArray(task?.objects) ? task.objects : [];
+    if (items.length !== 5 || !Number.isInteger(task.delivered) || task.delivered < 0 || task.delivered > 5) {
+      ui["task-progress"].textContent = "— / 5";
+      ui["task-items"].replaceChildren();
+      ui["task-note"].textContent = "Juego virtual no disponible.";
+      return;
+    }
+    const colors = ["#de454f", "#3875d4", "#e9a51e", "#4ba56e", "#945ec0"];
+    const names = ["Luna", "Cubo", "Sol", "Orejas", "Casco"];
+    ui["task-description"].textContent = physical ? "Lleva cada muñeco al círculo de su color. Pinza y objetos virtuales; el JACO físico no se detiene por contactos virtuales." : "Lleva cada muñeco al círculo de su color. La pinza y los objetos son virtuales; el agarre es asistido.";
+    ui["task-progress"].textContent = `${task.delivered} / 5`;
+    ui["task-items"].replaceChildren();
+    const taskStates = {sujeto: "en pinza", apoyado: "apoyado", caido: "caído", en_aire: "en el aire", entregado: "entregado"};
+    for (let i = 0; i < 5; i++) {
+      const item = items.find(x => x && x.id === i);
+      const badge = document.createElement("span"); badge.className = "task-item";
+      const dot = document.createElement("span"); dot.className = "task-dot"; dot.style.backgroundColor = colors[i];
+      const text = document.createElement("span");
+      text.textContent = `${names[i]} · ${item?.delivered ? "entregado" : task.held === i ? "en pinza" : (taskStates[item?.state] || "pendiente")}`;
+      badge.append(dot, text);
+      const reset = document.createElement("button");
+      reset.type = "button"; reset.className = "task-reset"; reset.textContent = "Reiniciar";
+      reset.setAttribute("aria-label", `Reiniciar ${names[i]} a su posición inicial`);
+      reset.disabled = !state.connected || !state.session || readOnly || !["operator", "admin"].includes(state.role) || !["READY", "ACTIVE", "SIM_ONLY"].includes(state.room);
+      reset.addEventListener("click", () => {
+        if (reset.disabled) return;
+        if (send({type:"reset_object", object_id:i})) {
+          reset.disabled = true;
+          ui["dashboard-message"].textContent = `Reiniciando ${names[i]}…`;
+        }
+      });
+      badge.append(reset); ui["task-items"].append(badge);
+    }
+    ui["task-note"].textContent = task.delivered === 5 ? "¡Tarea completada!" : task.release_reason === "impacto" ? "La pinza soltó el muñeco por presión o impacto. Abre la pinza con − antes de volver a sujetarlo." : Number.isInteger(task.held) && task.held >= 0 && task.held < 5 ? `Sujetando ${names[task.held]}. Mantén la pinza cerrada, llévalo a su círculo y pulsa − para soltarlo.` : "Selecciona PINZA · SIMULADA, acerca los dedos al muñeco y mantén + para sujetarlo. Pulsa − para soltarlo.";
+  }
+
   function renderTelemetry() {
     ui.telemetry.replaceChildren();
     const t = state.telemetry;
+    renderTask(t?.virtual_task);
     const age = t && Number.isFinite(t.pose_age_sec) && t.pose_age_sec >= 0
       ? t.pose_age_sec + (performance.now() - t.receivedAt) / 1000 : Infinity;
     const fresh = state.connected && t && t.telemetry_available !== false && age <= 1;
+    const fingersValid = fresh && Array.isArray(t.finger_positions) && t.finger_positions.length === 3 && t.finger_positions.every(Number.isFinite);
+    ui["gripper-status"].textContent = fingersValid && t.finger_source === "simulated" ? "Simulación en vivo" : fingersValid ? "Origen no verificado" : "Sin simulación";
+    ui["gripper-status"].className = "badge " + (fingersValid ? "good" : "bad");
+    ui["gripper-position"].textContent = fingersValid ? formatVector(t.finger_positions, 3) : "—";
     ui["telemetry-status"].textContent = fresh ? "En vivo" : "No disponible";
     ui["telemetry-status"].className = "badge " + (fresh ? "good" : "bad");
     ui["telemetry-note"].textContent = fresh
@@ -249,21 +294,46 @@
     for (const [label, value] of [
       ["Cuaternión (x, y, z, w)", fresh ? formatVector(t.pose?.quaternion_xyzw, 4) : "—"],
       ["Articulaciones J1–J6 (rad)", fresh ? formatVector(t.joint_positions, 6) : "—"],
+      ["Dedos simulados F1–F3 (rad)", fresh && t.finger_source === "simulated" ? formatVector(t.finger_positions, 3) : "—"],
     ]) {
       const dt = document.createElement("dt"), dd = document.createElement("dd");
       dt.textContent = label; dd.textContent = value; ui["telemetry-advanced"].append(dt, dd);
     }
   }
 
+  function setRoomState(next) {
+    if (!next) return;
+    ui["pause-banner"].hidden = next !== "PAUSED";
+    if (next === state.room) return;
+    const previous = state.room;
+    state.room = next;
+    if (next === "PAUSED") {
+      // A held pointer or key must never resume motion when the pause ends.
+      for (const axis of state.leases.keys()) state.values.set(axis, 0);
+    }
+    if (state.role === "operator" && state.screen === "dashboard") {
+      renderControls();
+      if (previous === "PAUSED" && motionAllowed()) {
+        ui["dashboard-message"].textContent = "Control web reanudado. Pulsa de nuevo para mover.";
+        sendInputs();
+      }
+    }
+  }
+
   function renderRoom(message) {
     if (Number.isInteger(message.revision) && message.revision < state.revision) return;
     const oldOptions = JSON.stringify([state.axes, state.room]);
+    const oldGripperAvailable = state.axes.PINZA?.available;
     if (Number.isInteger(message.revision)) state.revision = message.revision;
     const previousRoom = state.room;
-    state.room = message.state || state.room;
+    setRoomState(message.state);
     if (previousRoom !== state.room) log(`${physical ? "Estado del brazo físico" : "Estado de simulación"}: ${state.room}`);
     if (message.modes && typeof message.modes === "object") state.modes = message.modes;
     if (message.axes && typeof message.axes === "object") state.axes = message.axes;
+    if (oldGripperAvailable !== state.axes.PINZA?.available) {
+      if (state.axes.PINZA?.available === false) state.values.set("PINZA", 0);
+      if (state.role === "operator" && state.screen === "dashboard") renderControls();
+    }
     if (state.leases.size && state.revision > state.grantRevision) {
       let changed = false;
       for (const [axis, lease] of state.leases) {
@@ -277,7 +347,7 @@
         ui["dashboard-message"].textContent = "Una reserva terminó. Vuelve a elegir componentes si deseas continuar.";
       }
     }
-    ui["room-state"].textContent = state.room || "—";
+    ui["room-state"].textContent = state.room === "SIM_ONLY" ? "Solo pinza simulada" : state.room || "—";
     ui["room-state"].className = "badge " + (state.room === "FAULT" ? "bad" : "good");
     ui.rearm.disabled = state.room !== "FAULT";
     renderModes(); renderOwners(); renderRail();
@@ -288,12 +358,18 @@
   }
   function makeMoveButton(axis, direction) {
     const button = document.createElement("button");
-    button.className = "move"; button.textContent = direction < 0 ? "−" : "+";
-    button.setAttribute("aria-label", `Mover ${axis} ${direction < 0 ? "negativo" : "positivo"}`);
+    button.className = "move";
+    button.disabled = !motionAllowed(axis) || (axis === "PINZA" && (state.axes.PINZA?.available !== true || !state.gripperSimulation));
+    const icon = document.createElement("img");
+    icon.src = direction < 0 ? "icons/minus.svg" : "icons/plus.svg";
+    icon.alt = ""; icon.draggable = false; icon.setAttribute("aria-hidden", "true");
+    button.append(icon);
+    button.addEventListener("contextmenu", (event) => event.preventDefault());
+    button.setAttribute("aria-label", axis === "PINZA" ? (direction < 0 ? "Abrir pinza simulada" : "Cerrar pinza simulada") : `Mover ${axis} ${direction < 0 ? "negativo" : "positivo"}`);
     const start = (event) => {
-      if (!state.leases.has(axis) || !state.connected) return;
+      if (!state.leases.has(axis) || !motionAllowed(axis) || (axis === "PINZA" && (state.axes.PINZA?.available !== true || !state.gripperSimulation))) return;
       if (event.type === "keydown" && event.repeat) return;
-      event.preventDefault(); state.values.set(axis, direction * (state.speeds.get(axis) ?? 0.1)); sendInputs();
+      event.preventDefault(); state.values.set(axis, direction * (state.speeds.get(axis) ?? (axis === "PINZA" ? 0.5 : 0.1))); sendInputs();
       if (event.type === "pointerdown") {
         try { button.setPointerCapture(event.pointerId); } catch { /* already released */ }
       }
@@ -312,21 +388,22 @@
     ui.controls.replaceChildren();
     for (const axis of AXES) {
       if (!state.leases.has(axis)) continue;
-      const row = document.createElement("div"); row.className = "control-row";
+      const row = document.createElement("div"); row.className = "control-row" + (motionAllowed(axis) ? "" : " is-paused");
       const title = document.createElement("div"); title.className = "control-name";
-      const name = document.createElement("strong"); name.textContent = axis;
-      const kind = document.createElement("small"); kind.textContent = AXES.indexOf(axis) < 3 ? "Traslación" : "Rotación";
+      const name = document.createElement("strong"); name.textContent = axis === "PINZA" ? "PINZA · SIMULADA" : axis;
+      const kind = document.createElement("small"); kind.textContent = axis === "PINZA" ? "− Abrir · + Cerrar" : AXES.indexOf(axis) < 3 ? "Traslación" : "Rotación";
       title.append(name, kind);
       const speed = document.createElement("label"); speed.className = "control-speed";
       const description = document.createElement("span");
       const slider = document.createElement("input");
+      slider.disabled = !motionAllowed(axis) || (axis === "PINZA" && (state.axes.PINZA?.available !== true || !state.gripperSimulation));
       slider.type = "range"; slider.min = "1"; slider.max = "100"; slider.step = "1";
-      slider.value = String(Math.round((state.speeds.get(axis) ?? 0.1) * 100));
+      slider.value = String(Math.round((state.speeds.get(axis) ?? (axis === "PINZA" ? 0.5 : 0.1)) * 100));
       slider.setAttribute("aria-label", `Velocidad de ${axis}`);
       const updateDescription = () => {
         const percent = Number(slider.value);
         const linear = AXES.indexOf(axis) < 3;
-        description.textContent = `Velocidad: ${percent}% · ${(percent * (linear ? 0.5 : 0.175 * 180 / Math.PI / 100)).toFixed(linear ? 1 : 2)} ${linear ? "mm/s" : "°/s"} máximo`;
+        description.textContent = axis === "PINZA" ? `Velocidad de la pinza simulada: ${percent}%` : `Velocidad: ${percent}% · ${(percent * (linear ? 0.5 : 0.175 * 180 / Math.PI / 100)).toFixed(linear ? 1 : 2)} ${linear ? "mm/s" : "°/s"} máximo`;
       };
       updateDescription();
       slider.addEventListener("input", () => {
@@ -362,7 +439,7 @@
         el("robot-mode").textContent = `J2N6S300 · ${physical ? "BRAZO FÍSICO" : "SIMULACIÓN"}`;
         el("admin-title").textContent = physical ? "Seguridad del brazo físico" : "Seguridad de la simulación";
         state.session = message.session_id;
-        state.room = message.state;
+        setRoomState(message.state);
         status("Conectado", "good"); startTimers();
         if (state.role === "observer" && state.screen === "modes" &&
             /^(Esperando|Conexión perdida)/.test(ui["mode-message"].textContent)) {
@@ -376,7 +453,14 @@
       case "room_state": renderRoom(message); break;
       case "telemetry":
         state.telemetry = {...message, receivedAt:performance.now()};
-        if (message.state) { state.room = message.state; ui["room-state"].textContent = message.state; renderRail(); }
+        const hadSimulation = state.gripperSimulation;
+        state.gripperSimulation = message.finger_source === "simulated" && message.telemetry_available !== false;
+        if (hadSimulation !== state.gripperSimulation) {
+          if (!state.gripperSimulation) state.values.set("PINZA", 0);
+          if (state.screen === "selection") renderOptions();
+          if (state.screen === "dashboard" && state.role === "operator") renderControls();
+        }
+        if (message.state) { setRoomState(message.state); ui["room-state"].textContent = message.state === "SIM_ONLY" ? "Solo pinza simulada" : message.state; renderRail(); }
         if (state.screen === "dashboard") renderTelemetry();
         break;
       case "claim_granted":
@@ -390,9 +474,15 @@
         }
         if (!state.leases.size) { goHome("No se recibió una reserva válida."); break; }
         renderControls(); enterDashboard("operator"); sendInputs(); break;
+      case "object_reset":
+        if (Number.isInteger(message.object_id) && message.object_id >= 0 && message.object_id < 5) {
+          ui["dashboard-message"].textContent = `${["Luna", "Cubo", "Sol", "Orejas", "Casco"][message.object_id]} volvió a su posición inicial.`;
+        }
+        break;
       case "stop_confirmed": log("STOP confirmado · Reservas revocadas"); ui["dashboard-message"].textContent = "STOP confirmado: reservas revocadas."; break;
       case "rearm_confirmed": log("Rearme confirmado"); ui["dashboard-message"].textContent = "Rearme confirmado."; break;
       case "error":
+        if (message.code === "room_not_operational" && state.room === "PAUSED") break;
         if (message.code === "authentication_failed" && state.role === "observer") {
           closeCurrent(); state.axes = {}; state.modes = {}; state.telemetry = null;
           show("modes"); renderModes(); renderTelemetry();
@@ -419,7 +509,7 @@
     }
     if (role === "operator") {
       if (readOnly) { connect("operator"); return; }
-      if (state.room === "FAULT" || state.room === "NOT_READY") { ui["mode-message"].textContent = "El brazo aún no está listo para operar."; return; }
+      if (state.room === "FAULT" || state.room === "NOT_READY" || state.room === "PAUSED") { ui["mode-message"].textContent = "El brazo aún no está listo para operar."; return; }
       state.selected.clear(); ui["selection-message"].textContent = ""; show("selection"); renderOptions();
     } else if (role === "observer") enterDashboard("observer");
     else {

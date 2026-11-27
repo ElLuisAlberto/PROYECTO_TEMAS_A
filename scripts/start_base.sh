@@ -302,6 +302,10 @@ main() {
         fi
     fi
 
+    if ! python3 -c 'import pybullet' >/dev/null 2>&1; then
+        info "Juego virtual no disponible: instale python3 -m pip install --user -r $PROJECT_ROOT/requirements-game.txt"
+    fi
+
     if ! python3 -c '
 import websockets
 major = int(websockets.__version__.split(".", 1)[0])
@@ -386,6 +390,7 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
     if (( ! HEADLESS )); then
         local -a console_args=()
         if [[ "$BACKEND" == direct-mock || "$BACKEND" == direct-usb ]]; then console_args+=(--direct-bridge); fi
+        if [[ "$BACKEND" == direct-usb ]]; then console_args+=(--physical); fi
         start_process desktop_console \
             env -i HOME="$HOME" USER="$USER" \
             PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -393,6 +398,7 @@ raise SystemExit(0 if 12 <= major < 16 else 1)
             XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}" \
             PYTHONPATH="$PYTHONPATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
             AMENT_PREFIX_PATH="${AMENT_PREFIX_PATH:-}" ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" ROS_LOCALHOST_ONLY=1 \
+            TEMAS_A_BASE_PID="$$" TEMAS_A_BASE_START_TICKS="$(awk '{print $22}' "/proc/$$/stat")" \
             python3 -m teleop_cooperativo.desktop_console \
             --server-url "ws://127.0.0.1:$WEBSOCKET_PORT/ws" \
             "${credential_args[@]}" \

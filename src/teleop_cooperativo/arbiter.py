@@ -18,6 +18,8 @@ class RoomState(str, Enum):
     READY = "READY"
     ACTIVE = "ACTIVE"
     FAULT = "FAULT"
+    PAUSED = "PAUSED"
+    SIM_ONLY = "SIM_ONLY"
 
 
 @dataclass(frozen=True)
@@ -51,8 +53,13 @@ class CooperativeArbiter:
 
     def mark_ready(self) -> None:
         """Permit control only after the local simulation is available."""
+        if self._state in {RoomState.NOT_READY, RoomState.FAULT, RoomState.SIM_ONLY}:
+            self._state = RoomState.ACTIVE if self._has_leases() else RoomState.READY
+
+    def mark_simulation_ready(self) -> None:
+        """Permit only the virtual gripper while physical output is unarmed."""
         if self._state in {RoomState.NOT_READY, RoomState.FAULT}:
-            self._state = RoomState.READY
+            self._state = RoomState.SIM_ONLY
 
     def claim(
         self,
@@ -62,9 +69,15 @@ class CooperativeArbiter:
         now: float | None = None,
     ) -> tuple[Lease, ...]:
         """Grant an axis claim only while the room is operational."""
-        self._require_operational()
-        granted = self.leases.claim(session_id, axes, now=now)
-        self._state = RoomState.ACTIVE
+        requested = tuple(axes)
+        if self._state is RoomState.SIM_ONLY:
+            if not requested or any(Axis.parse(axis) is not Axis.PINZA for axis in requested):
+                raise RuntimeError("Solo la pinza simulada está disponible")
+        else:
+            self._require_operational()
+        granted = self.leases.claim(session_id, requested, now=now)
+        if self._state is not RoomState.SIM_ONLY:
+            self._state = RoomState.ACTIVE
         return granted
 
     def submit_input(
@@ -77,12 +90,17 @@ class CooperativeArbiter:
         now: float | None = None,
     ) -> None:
         """Forward an already authenticated input to the lease manager."""
-        self._require_operational()
+        if self._state is RoomState.SIM_ONLY:
+            if not isinstance(values, Mapping) or not values or any(Axis.parse(axis) is not Axis.PINZA for axis in values):
+                raise RuntimeError("Solo la pinza simulada está disponible")
+        else:
+            self._require_operational()
         self.leases.submit_input(session_id, sequence, values, tokens, now=now)
 
     def heartbeat(self, session_id: str, *, now: float | None = None) -> None:
         """Forward a liveness signal for an existing session."""
-        self._require_operational()
+        if self._state not in {RoomState.PAUSED, RoomState.SIM_ONLY}:
+            self._require_operational()
         self.leases.heartbeat(session_id, now=now)
 
     def release(
@@ -91,15 +109,19 @@ class CooperativeArbiter:
         axes: Iterable[Axis | str] | None = None,
     ) -> tuple[Axis, ...]:
         """Release axes and return to READY when the room becomes empty."""
-        self._require_operational()
+        if self._state not in {RoomState.PAUSED, RoomState.SIM_ONLY}:
+            self._require_operational()
         released = self.leases.release(session_id, axes)
-        self._state = RoomState.ACTIVE if self._has_leases() else RoomState.READY
+        if self._state not in {RoomState.PAUSED, RoomState.SIM_ONLY}:
+            self._state = RoomState.ACTIVE if self._has_leases() else RoomState.READY
         return released
 
     def tick(self, *, now: float | None = None) -> ArbiterTick:
         """Expire stale state, compose one command and expose current room state."""
         if self._state in {RoomState.NOT_READY, RoomState.FAULT}:
             return ArbiterTick(self._state, self._zero_twist(), MaintenanceResult((), ()))
+        if self._state in {RoomState.PAUSED, RoomState.SIM_ONLY}:
+            return ArbiterTick(self._state, self._zero_twist(), self.leases.advance(now=now))
 
         maintenance = self.leases.advance(now=now)
         self._state = RoomState.ACTIVE if self._has_leases() else RoomState.READY
@@ -112,6 +134,17 @@ class CooperativeArbiter:
             ),
             maintenance,
         )
+
+    def pause(self) -> tuple[Axis, ...]:
+        if self._state not in {RoomState.READY, RoomState.ACTIVE}:
+            return ()
+        self.leases.suspend_all()
+        self._state = RoomState.PAUSED
+        return ()
+
+    def resume(self) -> None:
+        if self._state is RoomState.PAUSED:
+            self._state = RoomState.ACTIVE if self._has_leases() else RoomState.READY
 
     def fault(self) -> tuple[Axis, ...]:
         """Immediately clear authority after a simulation or host failure."""

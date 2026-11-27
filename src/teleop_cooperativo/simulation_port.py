@@ -24,6 +24,7 @@ class TelemetrySample:
     pose: ToolPose
     joint_positions: tuple[float, ...]
     age_sec: float
+    finger_positions: tuple[float, float, float] | None = None
 
 
 class SimulationPort(Protocol):
