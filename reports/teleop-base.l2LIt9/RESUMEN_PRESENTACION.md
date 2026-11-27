@@ -103,6 +103,8 @@
 - `04_cooperacion_y_estados.png` — Línea de tiempo de estados de sala, número de operadores simultáneos y cronograma de *leases* por eje.
 - `05_resumen_para_diapositiva.png` — Resumen ejecutivo en 4 paneles claros (histograma de rapidez de red, latencia por equipo, uso por eje y barras de cumplimiento).
 - `06_resumen_seguridad_y_tarea.png` — Distribución de tiempo por estado y tarjetas KPI (trayectoria, velocidad, tarea virtual y seguridad).
+- `07_analisis_latencia_rtt_jitter.png` — Curva acumulada CDF de RTT, boxplot por dispositivo, jitter entre paquetes y tiempos internos.
+- `08_rtt_jitter_curso_comparativo.png` / `08a` / `08b` / `08c` — Series de RTT crudo, jitter instantáneo `|ΔRTT|` + jitter suavizado RFC 3550 e histograma de densidad (`Mean RTT` y `+1σ`) en el formato `plot_jitter.py` del curso `1MTR74`.
 
 ---
 

@@ -75,6 +75,22 @@ def summarize_array(values: list[float] | np.ndarray) -> dict[str, Any]:
     }
 
 
+def compute_rfc3550_jitter(values: list[float] | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute instantaneous inter-packet jitter |ΔRTT| and RFC 3550 smoothed jitter."""
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return np.zeros(0, dtype=float), np.zeros(0, dtype=float)
+    inst = np.zeros(arr.size, dtype=float)
+    rfc = np.zeros(arr.size, dtype=float)
+    j = 0.0
+    for i in range(1, arr.size):
+        d = abs(float(arr[i] - arr[i - 1]))
+        j = j + (d - j) / 16.0
+        inst[i] = d
+        rfc[i] = j
+    return inst, rfc
+
+
 def parse_direct_bridge_log(log_path: Path) -> dict[str, Any]:
     """Parse kinova_direct_bridge output log for USB 100 Hz telemetry and events."""
     if not log_path.is_file():
@@ -174,6 +190,8 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     tel_joints: list[list[float]] = []
     tel_fingers: list[list[float]] = []
     tel_finger_t: list[float] = []
+    tel_axis_owners: list[dict[str, str | None]] = []
+    tel_finger_owners: list[str | None] = []
 
     # Cooperation & state tracking across all events
     state_spans: list[Span] = []
@@ -190,6 +208,7 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     rtt_t: list[float] = []
     rtt_ms: list[float] = []
     rtt_by_operator: dict[str, list[float]] = defaultdict(list)
+    rtt_t_by_operator: dict[str, list[float]] = defaultdict(list)
 
     # Virtual task tracking
     vtask_max_delivered = 0
@@ -306,6 +325,7 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                     rtt_ms.append(float(raw_rtt))
                     op_key = str(payload.get("operator_name") or payload.get("role") or "web")
                     rtt_by_operator[op_key].append(float(raw_rtt))
+                    rtt_t_by_operator[op_key].append(rel_t)
 
             elif ev_type == "telemetry":
                 src = payload.get("source")
@@ -314,6 +334,10 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 tel_t.append(rel_t)
                 tel_mono.append(mono)
                 tel_state.append(r_state)
+                tel_axis_owners.append({
+                    ax: (str((axes_map.get(ax) or {}).get("owner")) if (axes_map.get(ax) or {}).get("assigned") and (axes_map.get(ax) or {}).get("owner") else None)
+                    for ax in AXES_ORDER
+                })
 
                 pose_age = payload.get("pose_age_sec")
                 if isinstance(pose_age, (int, float)) and math.isfinite(pose_age):
@@ -340,6 +364,8 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
                 if isinstance(fingers, list) and len(fingers) == 3:
                     tel_finger_t.append(rel_t)
                     tel_fingers.append([float(x) for x in fingers])
+                    p_info = axes_map.get("PINZA") or {}
+                    tel_finger_owners.append(str(p_info.get("owner")) if p_info.get("assigned") and p_info.get("owner") else None)
 
                 vtask = payload.get("virtual_task")
                 if isinstance(vtask, dict):
@@ -407,18 +433,34 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     active_lin_sec = float(np.sum(sample_dt[lin_mag_mms > 1e-3])) if lin_mag_mms.size == sample_dt.size else 0.0
     active_ang_sec = float(np.sum(sample_dt[ang_mag_degs > 1e-2])) if ang_mag_degs.size == sample_dt.size else 0.0
     axis_cmd_sec: dict[str, float] = {}
+    axis_cmd_by_owner: dict[str, dict[str, float]] = {ax: defaultdict(float) for ax in AXES_ORDER}
     if lin_arr.size and lin_arr.shape[0] == sample_dt.size:
         for idx, ax in enumerate(("X", "Y", "Z")):
-            axis_cmd_sec[ax] = round(float(np.sum(sample_dt[np.abs(lin_arr[:, idx]) > 1e-6])), 3)
+            mask = np.abs(lin_arr[:, idx]) > 1e-6
+            axis_cmd_sec[ax] = round(float(np.sum(sample_dt[mask])), 3)
+            for k in np.flatnonzero(mask):
+                owner = tel_axis_owners[k].get(ax) or "Sin dueño"
+                axis_cmd_by_owner[ax][owner] += float(sample_dt[k])
         for idx, ax in enumerate(("ROLL", "PITCH", "YAW")):
-            axis_cmd_sec[ax] = round(float(np.sum(sample_dt[np.abs(ang_arr[:, idx]) > 1e-6])), 3)
+            mask = np.abs(ang_arr[:, idx]) > 1e-6
+            axis_cmd_sec[ax] = round(float(np.sum(sample_dt[mask])), 3)
+            for k in np.flatnonzero(mask):
+                owner = tel_axis_owners[k].get(ax) or "Sin dueño"
+                axis_cmd_by_owner[ax][owner] += float(sample_dt[k])
     if len(tel_fingers) >= 2 and len(tel_finger_t) == len(tel_fingers):
         f_arr = np.asarray(tel_fingers, dtype=float)
         f_dt = np.diff(np.asarray(tel_finger_t, dtype=float))
         moving_pinza = np.abs(np.diff(f_arr[:, 0])) > 1e-4
         axis_cmd_sec["PINZA"] = round(float(np.sum(f_dt[moving_pinza])), 3)
+        for k in np.flatnonzero(moving_pinza):
+            owner = tel_finger_owners[k + 1] or tel_finger_owners[k] or "Sin dueño"
+            axis_cmd_by_owner["PINZA"][owner] += float(f_dt[k])
     else:
         axis_cmd_sec["PINZA"] = 0.0
+    axis_cmd_by_owner_rounded = {
+        ax: {op: round(sec, 3) for op, sec in sorted(owners.items()) if sec > 0.0}
+        for ax, owners in axis_cmd_by_owner.items()
+    }
 
     kinematics: dict[str, Any] = {"samples": int(pos_arr.shape[0])}
     if pos_arr.shape[0] >= 2:
@@ -442,6 +484,7 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "peak_linear_speed_mm_s": round(float(np.max(lin_mag_mms)), 2) if lin_mag_mms.size else 0.0,
             "peak_angular_speed_deg_s": round(float(np.max(ang_mag_degs)), 2) if ang_mag_degs.size else 0.0,
             "commanded_time_by_axis_sec": axis_cmd_sec,
+            "commanded_time_by_axis_owner_sec": axis_cmd_by_owner_rounded,
         })
 
     joints_arr_deg = np.rad2deg(np.asarray(tel_joints, dtype=float)) if tel_joints else np.zeros((0, 6))
@@ -480,6 +523,30 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         rtt_info["overall_ms"] = summarize_array(rtt_ms)
         rtt_info["by_client"] = {
             op: summarize_array(vals) for op, vals in sorted(rtt_by_operator.items())
+        }
+        all_deltas: list[float] = []
+        all_rfc: list[float] = []
+        jitter_by_client: dict[str, dict[str, Any]] = {}
+        rfc_by_client: dict[str, dict[str, Any]] = {}
+        for op, vals in sorted(rtt_by_operator.items()):
+            if len(vals) >= 2:
+                inst_j, rfc_j = compute_rfc3550_jitter(vals)
+                jitter_by_client[op] = summarize_array(inst_j[1:])
+                rfc_st = summarize_array(rfc_j[1:])
+                rfc_st["final"] = round(float(rfc_j[-1]), 3)
+                rfc_by_client[op] = rfc_st
+                all_deltas.extend(inst_j[1:].tolist())
+                all_rfc.extend(rfc_j[1:].tolist())
+            else:
+                jitter_by_client[op] = {"count": 0}
+                rfc_by_client[op] = {"count": 0}
+        rtt_info["jitter_inter_packet_ms"] = {
+            "overall": summarize_array(all_deltas),
+            "by_client": jitter_by_client,
+        }
+        rtt_info["jitter_rfc3550_ms"] = {
+            "overall": summarize_array(all_rfc),
+            "by_client": rfc_by_client,
         }
 
     summary: dict[str, Any] = {
@@ -544,6 +611,8 @@ def load_and_analyze(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "fingers": fingers_arr,
         "rtt_t": np.asarray(rtt_t, dtype=float),
         "rtt_ms": np.asarray(rtt_ms, dtype=float),
+        "rtt_by_client": {op: np.asarray(vals, dtype=float) for op, vals in sorted(rtt_by_operator.items())},
+        "rtt_t_by_client": {op: np.asarray(ts, dtype=float) for op, ts in sorted(rtt_t_by_operator.items())},
         "bridge_series": bridge_info.get("series", {}),
         "state_spans": state_spans,
         "axis_spans": axis_spans,
@@ -712,15 +781,18 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
 
     if series["lin_mag_mms"].size == tel_t.size and tel_t.size > 0:
         tx, vs = _decimate(tel_t, series["lin_mag_mms"])
-        ax_spd.plot(tx, vs, color="#7c3aed", linewidth=1.1, label="||v_cmd||")
+        ax_spd.plot(tx, vs, color="#7c3aed", linewidth=1.1, label="Velocidad comandada ||v||")
         ax_spd.fill_between(tx, 0, vs, color="#7c3aed", alpha=0.15)
+        ax_spd.axhline(50.0, color="#dc2626", linestyle="--", linewidth=1.0, label="Límite seguridad (50 mm/s)")
         ax_spd.set_ylabel("|v| (mm/s)")
         ax_spd.set_xlabel("Tiempo (s)")
+        ax_spd.set_ylim(0, max(58.0, float(np.max(vs)) * 1.15))
         ax_spd.set_title(
-            f"Magnitud de velocidad lineal comandada · activo {summary['kinematics'].get('active_linear_motion_sec', 0)} s · "
+            f"Velocidad lineal · activo {summary['kinematics'].get('active_linear_motion_sec', 0)} s · "
             f"pico {summary['kinematics'].get('peak_linear_speed_mm_s', 0)} mm/s"
         )
         ax_spd.set_xlim(0, max(dur, 1.0))
+        ax_spd.legend(loc="upper right", fontsize=8.5)
 
     p2 = out_dir / "02_trayectoria_3d_y_xyz.png"
     fig.savefig(p2, dpi=300)
@@ -802,6 +874,12 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         f"Estados de la sala y concurrencia · operadores distintos: {coop['distinct_operators']} · "
         f"solapamiento ≥2 ops: {coop['multi_operator_overlap_sec']} s ({coop['multi_operator_overlap_pct_of_occupied']}%)"
     )
+    seen_states = [st for st in ROOM_STATES_ORDER if summary["room_state_dwell_sec"].get(st, 0.0) > 0]
+    top_handles = [mpatches.Patch(color=ROOM_STATE_COLORS[st], label=st) for st in seen_states]
+    if series["n_ops_t"].size > 0:
+        top_handles.append(plt.Line2D([0], [0], color="#111827", linewidth=1.6, label="# Operadores activos"))
+    if top_handles:
+        ax.legend(handles=top_handles, loc="upper left", ncol=min(len(top_handles), 4), fontsize=8.0, framealpha=0.92)
 
     ax = axes[1]
     palette = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#3b82f6", "#8b5cf6"]
@@ -861,7 +939,7 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         bars = ax.bar(range(len(b_labels)), b_counts, color=b_colors, width=0.62, edgecolor="white")
         ax.set_xticks(range(len(b_labels)))
         ax.set_xticklabels(b_labels, fontsize=8.5)
-        ax.set_ylim(0, max(b_counts) * 1.22 + 5.0)
+        ax.set_ylim(0, max(b_counts) * 1.28 + 8.0)
         ax.set_ylabel("% de mensajes")
         for bar, val in zip(bars, b_counts):
             ax.text(
@@ -873,6 +951,13 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
                 fontsize=9,
                 fontweight="bold",
             )
+        rtt_cat_handles = [
+            mpatches.Patch(color="#16a34a", label="Instantáneo (<20 ms)"),
+            mpatches.Patch(color="#22c55e", label="Muy rápido (20–50 ms)"),
+            mpatches.Patch(color="#eab308", label="Fluido (50–100 ms)"),
+            mpatches.Patch(color="#ef4444", label="Lento / pico (>100 ms)"),
+        ]
+        ax.legend(handles=rtt_cat_handles, loc="upper right", fontsize=8.0, framealpha=0.92)
         ax.set_title(f"¿Qué tan rápida fue la red? (n={rtt_arr.size} pings)")
     else:
         ax.axis("off")
@@ -938,30 +1023,37 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         )
         ax.set_title("Latencia por dispositivo conectado")
 
-    # Bottom-left: Active command time per axis colored by owner
+    # Bottom-left: Active command time per axis stacked by operator
     ax = axes[1, 0]
     axis_times = kin.get("commanded_time_by_axis_sec", {})
-    axis_owner_map: dict[str, str] = {}
-    for op_name, owned_axes in coop["operators_axes"].items():
-        for axis_name in owned_axes:
-            axis_owner_map[axis_name] = op_name
+    axis_owner_times = kin.get("commanded_time_by_axis_owner_sec", {})
     op_list = sorted(coop["operators_axes"].keys())
     op_palette = {op_name: palette[idx % len(palette)] for idx, op_name in enumerate(op_list)}
-    vals_ax = [float(axis_times.get(axis_name, 0.0)) for axis_name in AXES_ORDER]
-    cols_ax = [op_palette.get(axis_owner_map.get(axis_name, ""), "#94a3b8") for axis_name in AXES_ORDER]
     y_ax = np.arange(len(AXES_ORDER))
-    bars_ax = ax.barh(y_ax, vals_ax, color=cols_ax, height=0.62)
+    vals_ax = [float(axis_times.get(axis_name, 0.0)) for axis_name in AXES_ORDER]
+    max_ax = max(vals_ax) if vals_ax else 1.0
+    if op_list and any(axis_owner_times.get(ax) for ax in AXES_ORDER):
+        lefts = np.zeros(len(AXES_ORDER), dtype=float)
+        for op_name in op_list:
+            seg = np.array([float((axis_owner_times.get(ax) or {}).get(op_name, 0.0)) for ax in AXES_ORDER])
+            if np.any(seg > 0):
+                ax.barh(y_ax, seg, left=lefts, color=op_palette[op_name], height=0.62, label=op_name)
+                lefts += seg
+        rem = np.maximum(0.0, np.array(vals_ax) - lefts)
+        if np.any(rem > 0.05):
+            ax.barh(y_ax, rem, left=lefts, color="#94a3b8", height=0.62, label="Otro / sin dueño")
+    else:
+        ax.barh(y_ax, vals_ax, color="#94a3b8", height=0.62, label="Sin dueño")
     ax.set_yticks(y_ax)
     ax.set_yticklabels(AXES_ORDER, fontweight="bold")
     ax.invert_yaxis()
-    max_ax = max(vals_ax) if vals_ax else 1.0
-    ax.set_xlim(0, max(max_ax * 1.24, 5.0))
+    ax.set_xlim(0, max(max_ax * 1.26, 5.0))
     ax.set_xlabel("Tiempo en movimiento activo (s)")
     ax.set_title("Uso real por componente y quién lo controló")
-    for bar, val in zip(bars_ax, vals_ax):
+    for row_i, val in enumerate(vals_ax):
         ax.text(
             val + max(max_ax * 0.02, 0.2),
-            bar.get_y() + bar.get_height() / 2.0,
+            row_i,
             f"{val:.1f} s",
             va="center",
             ha="left",
@@ -970,7 +1062,7 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         )
     if op_palette:
         leg_patches = [mpatches.Patch(color=col, label=op_name) for op_name, col in op_palette.items()]
-        ax.legend(handles=leg_patches, loc="lower right", fontsize=8.5, title="Operador")
+        ax.legend(handles=leg_patches, loc="lower right", fontsize=8.5, title="Operador", framealpha=0.92)
 
     # Bottom-right: 4 System KPI progress bars (0-100%)
     ax = axes[1, 1]
@@ -990,18 +1082,23 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         ("2 dispositivos\na la vez", coop_pct, f"{coop_pct:.1f}% ({coop['multi_operator_overlap_sec']:.1f} s)"),
     ]
     y_kpi = np.arange(len(kpi_items))
-    ax.barh(y_kpi, [100.0] * len(kpi_items), color="#e2e8f0", height=0.56)
+    ax.barh(y_kpi, [100.0] * len(kpi_items), color="#e2e8f0", height=0.56, label="Meta ideal (100%)")
     kpi_colors = ["#0d9488", "#0284c7", "#16a34a", "#6366f1"]
     ax.barh(y_kpi, [item[1] for item in kpi_items], color=kpi_colors, height=0.56)
     ax.set_yticks(y_kpi)
     ax.set_yticklabels([item[0] for item in kpi_items], fontsize=9.5, fontweight="bold")
     ax.invert_yaxis()
-    ax.set_xlim(0, 165)
+    ax.set_xlim(0, 172)
     ax.set_xticks([0, 25, 50, 75, 100])
     ax.set_xlabel("Cumplimiento (%)")
     ax.set_title("Indicadores de estabilidad y cooperación")
     for idx, (_, pct, detail) in enumerate(kpi_items):
         ax.text(max(pct, 2.0) + 3.0, idx, detail, va="center", ha="left", fontsize=9, fontweight="bold", color="#0f172a")
+    kpi_leg = [
+        mpatches.Patch(color="#0284c7", label="Valor medido"),
+        mpatches.Patch(color="#e2e8f0", label="Meta 100%"),
+    ]
+    ax.legend(handles=kpi_leg, loc="lower right", fontsize=8.0, framealpha=0.92)
 
     p5 = out_dir / "05_resumen_para_diapositiva.png"
     fig.savefig(p5, dpi=300)
@@ -1038,6 +1135,8 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
         ax.set_xlim(0, max_st * 1.38 + 1.0)
         ax.set_xlabel("Tiempo acumulado (s)")
         ax.set_title(f"Distribución del tiempo total ({dur:.1f} s)")
+        st_patches = [mpatches.Patch(color=ROOM_STATE_COLORS.get(st, "#64748b"), label=st) for st, _ in dwell_items]
+        ax.legend(handles=st_patches, loc="lower right", fontsize=8.0, title="Estado", framealpha=0.92)
         for bar, val in zip(bars_st, st_vals):
             pct = (val / dur * 100.0) if dur > 0 else 0.0
             ax.text(
@@ -1095,6 +1194,280 @@ def generate_plots(summary: dict[str, Any], series: dict[str, Any], out_dir: Pat
     fig.savefig(p6, dpi=300)
     plt.close(fig)
     out_paths.append(p6)
+
+    # 7. IEEE-style RTT, CDF, Boxplot & Jitter Analysis (ultra clear with legends)
+    fig, axes = plt.subplots(2, 2, figsize=(13.0, 8.8), constrained_layout=True)
+    fig.suptitle(f"Análisis de Latencia de Red (RTT) y Jitter · {run_id}", fontsize=14, fontweight="bold")
+
+    rtt_all = series["rtt_ms"]
+    rtt_by_client = series.get("rtt_by_client", {})
+    active_clients = [
+        (name, arr)
+        for name, arr in rtt_by_client.items()
+        if arr.size >= 20
+    ]
+    active_clients.sort(key=lambda item: (item[0] in coop["operators_axes"], item[1].size), reverse=True)
+    active_clients = active_clients[:4]
+    client_colors = ["#4f46e5", "#ec4899", "#0d9488", "#f59e0b"]
+
+    # Top-left: Cumulative Distribution Function (CDF) with color-coded zones
+    ax = axes[0, 0]
+    if rtt_all.size > 0:
+        x_lim = max(120.0, float(np.percentile(rtt_all, 99)) * 1.18)
+        ax.axvspan(0, 50, color="#dcfce7", alpha=0.55, label="Zona muy fluida (0–50 ms)")
+        ax.axvspan(50, 100, color="#fef9c3", alpha=0.55, label="Zona fluida (50–100 ms)")
+        ax.axvspan(100, x_lim, color="#fee2e2", alpha=0.45, label="Retardo Wi-Fi (>100 ms)")
+        ax.axvline(100.0, color="#dc2626", linestyle="--", linewidth=1.2, label="Umbral fluido (100 ms)")
+        ax.axhline(95.0, color="#64748b", linestyle=":", linewidth=1.0, label="Percentil 95%")
+
+        sx = np.sort(rtt_all)
+        sy = np.linspace(0.0, 100.0, sx.size)
+        ax.plot(sx, sy, color="#0f172a", linewidth=2.0, label=f"Global (p50={np.percentile(rtt_all, 50):.1f}, p95={np.percentile(rtt_all, 95):.1f} ms)")
+        for idx, (cname, carr) in enumerate(active_clients):
+            cx = np.sort(carr)
+            cy = np.linspace(0.0, 100.0, cx.size)
+            ax.plot(cx, cy, color=client_colors[idx % len(client_colors)], linewidth=1.5, linestyle="-.", label=f"{cname} (p95={np.percentile(carr, 95):.1f} ms)")
+        ax.set_xlim(0, x_lim)
+        ax.set_ylim(0, 102)
+        ax.set_xlabel("Latencia ida y vuelta RTT (ms)")
+        ax.set_ylabel("% acumulado de mensajes")
+        ax.set_title("Curva acumulada (CDF): ¿qué % llegó antes de X ms?")
+        ax.legend(loc="lower right", fontsize=7.6, framealpha=0.94)
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Sin datos de RTT WebSocket en esta sesión.", ha="center", va="center", transform=ax.transAxes)
+
+    # Top-right: Per-client Boxplot + p95 markers
+    ax = axes[0, 1]
+    if active_clients:
+        data_bp = [arr for _, arr in active_clients]
+        bp = ax.boxplot(data_bp, patch_artist=True, showfliers=False, widths=0.5)
+        for idx, box in enumerate(bp["boxes"]):
+            c = client_colors[idx % len(client_colors)]
+            box.set_facecolor(c)
+            box.set_alpha(0.35)
+            box.set_edgecolor(c)
+            box.set_linewidth(1.5)
+        for med in bp["medians"]:
+            med.set_color("#0f172a")
+            med.set_linewidth(2.0)
+        p95_vals = [float(np.percentile(arr, 95)) for _, arr in active_clients]
+        p50_vals = [float(np.percentile(arr, 50)) for _, arr in active_clients]
+        xs_bp = np.arange(1, len(active_clients) + 1)
+        ax.scatter(xs_bp, p95_vals, marker="D", s=45, color="#dc2626", zorder=5, label="Percentil 95 (p95)")
+        ax.axhline(100.0, color="#16a34a", linestyle="--", linewidth=1.2, label="Umbral fluido (100 ms)")
+        y_hi = max(max(p95_vals), 100.0) * 1.25
+        ax.set_ylim(0, y_hi)
+        for x_i, p50_v, p95_v in zip(xs_bp, p50_vals, p95_vals):
+            ax.text(x_i, p95_v + y_hi * 0.03, f"p50={p50_v:.1f}\np95={p95_v:.1f}", ha="center", va="bottom", fontsize=8.0, fontweight="bold")
+        ax.set_xticks(xs_bp)
+        ax.set_xticklabels([f"{name}\n(n={arr.size})" for name, arr in active_clients], fontsize=8.5)
+        ax.set_ylabel("RTT (ms)")
+        ax.set_title("Dispersión de latencia por equipo (caja = 25%–75%)")
+        bp_handles = [
+            mpatches.Patch(color="#4f46e5", alpha=0.35, label="Rango central (25%–75%)"),
+            plt.Line2D([0], [0], color="#0f172a", linewidth=2.0, label="Mediana (p50)"),
+            plt.Line2D([0], [0], marker="D", color="w", markerfacecolor="#dc2626", markersize=7, label="Percentil 95 (p95)"),
+            plt.Line2D([0], [0], color="#16a34a", linestyle="--", linewidth=1.2, label="Umbral fluido (100 ms)"),
+        ]
+        ax.legend(handles=bp_handles, loc="upper left", fontsize=8.0, framealpha=0.94)
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Sin suficientes muestras RTT por dispositivo.", ha="center", va="center", transform=ax.transAxes)
+
+    # Bottom-left: Jitter per client (mean |ΔRTT| and std σ)
+    ax = axes[1, 0]
+    j_by_client = summary.get("network_rtt", {}).get("jitter_inter_packet_ms", {}).get("by_client", {})
+    if active_clients and j_by_client:
+        xs_j = np.arange(len(active_clients))
+        w = 0.34
+        j_means = [float((j_by_client.get(name) or {}).get("mean", 0.0)) for name, _ in active_clients]
+        j_stds = [float((summary["network_rtt"]["by_client"].get(name) or {}).get("std", 0.0)) for name, _ in active_clients]
+        b_jm = ax.bar(xs_j - w / 2, j_means, width=w, color="#0284c7", label="Jitter entre paquetes |ΔRTT| medio")
+        b_js = ax.bar(xs_j + w / 2, j_stds, width=w, color="#f59e0b", label="Desviación estándar σ(RTT)")
+        y_jtop = max(max(j_means), max(j_stds), 10.0) * 1.28
+        ax.set_ylim(0, y_jtop)
+        for bar, val in list(zip(b_jm, j_means)) + list(zip(b_js, j_stds)):
+            ax.text(bar.get_x() + bar.get_width() / 2.0, val + y_jtop * 0.02, f"{val:.1f} ms", ha="center", va="bottom", fontsize=8.5, fontweight="bold")
+        ax.set_xticks(xs_j)
+        ax.set_xticklabels([name for name, _ in active_clients], fontsize=9.0)
+        ax.set_ylabel("Variación / Jitter (ms)")
+        ax.set_title("Jitter por dispositivo (qué tanto varía el retardo)")
+        ax.legend(loc="upper left", fontsize=8.2, framealpha=0.94)
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Sin datos de jitter disponibles.", ha="center", va="center", transform=ax.transAxes)
+
+    # Bottom-right: Internal gateway dt & pose_age stability summary
+    ax = axes[1, 1]
+    dt_st = summary["gateway_tick_dt_ms"]
+    pa_st = summary["pose_age_ms"]
+    if dt_st.get("count", 0) > 0 and pa_st.get("count", 0) > 0:
+        metrics_lbl = ["Periodo Gateway\n(dt, meta 20 ms)", "Edad de postura\n(pose_age, ≤300 ms)"]
+        xs_i = np.arange(len(metrics_lbl))
+        w = 0.24
+        meds_i = [dt_st["p50"], pa_st["p50"]]
+        p95s_i = [dt_st["p95"], pa_st["p95"]]
+        maxs_i = [dt_st["max"], pa_st["max"]]
+        bi1 = ax.bar(xs_i - w, meds_i, width=w, color="#16a34a", label="Mediana (p50)")
+        bi2 = ax.bar(xs_i, p95s_i, width=w, color="#4f46e5", label="Percentil 95 (p95)")
+        bi3 = ax.bar(xs_i + w, maxs_i, width=w, color="#f97316", label="Máximo observado")
+        ax.axhline(300.0, color="#dc2626", linestyle="--", linewidth=1.2, label="Límite seguridad watchdog (300 ms)")
+        y_itop = max(max(maxs_i), 300.0) * 1.18
+        ax.set_ylim(0, y_itop)
+        for bar, val in list(zip(bi1, meds_i)) + list(zip(bi2, p95s_i)) + list(zip(bi3, maxs_i)):
+            ax.text(bar.get_x() + bar.get_width() / 2.0, val + y_itop * 0.015, f"{val:.1f}", ha="center", va="bottom", fontsize=8.2, fontweight="bold")
+        ax.set_xticks(xs_i)
+        ax.set_xticklabels(metrics_lbl, fontsize=9.0, fontweight="bold")
+        ax.set_ylabel("Tiempo (ms)")
+        ax.set_title("Tiempos internos de la estación madre vs. umbral")
+        ax.legend(loc="upper left", fontsize=8.0, framealpha=0.94)
+    else:
+        ax.axis("off")
+
+    p7 = out_dir / "07_analisis_latencia_rtt_jitter.png"
+    fig.savefig(p7, dpi=300)
+    plt.close(fig)
+    out_paths.append(p7)
+
+    # 8. Course-style (1MTR74 plot_jitter.py) RTT & RFC 3550 Jitter plots
+    def _plot_course_rtt_jitter_column(
+        axes_col: tuple[Any, Any, Any],
+        rtt_win: np.ndarray,
+        rtt_full: np.ndarray,
+        title_prefix: str = "",
+        use_markers: bool = True,
+    ) -> None:
+        ax_rtt, ax_jit, ax_hist = axes_col
+        inst_w, rfc_w = compute_rfc3550_jitter(rtt_win)
+        idx = np.arange(rtt_win.size)
+
+        # Row 0: Raw RTT over Samples
+        ax_rtt.plot(
+            idx,
+            rtt_win,
+            color="#3b82b6",
+            linewidth=0.95 if use_markers else 0.55,
+            alpha=0.82 if use_markers else 0.65,
+            marker="o" if use_markers else None,
+            markersize=2.8 if use_markers else 0.0,
+            label="Raw RTT",
+        )
+        ax_rtt.grid(True, linestyle=":", alpha=0.55)
+        ax_rtt.set_ylabel("RTT (ms)")
+        ax_rtt.set_xlabel("Sample Index")
+        ax_rtt.set_title(f"{title_prefix}Round-Trip Time (RTT) over Samples (n={rtt_win.size})")
+        ax_rtt.legend(loc="upper right", fontsize=8.0, framealpha=0.92)
+
+        # Row 1: Instantaneous Jitter |ΔRTT| + RFC 3550 Smoothed Jitter
+        ax_jit.plot(
+            idx,
+            inst_w,
+            color="#f59e0b",
+            linewidth=0.85 if use_markers else 0.45,
+            alpha=0.68 if use_markers else 0.45,
+            marker="x" if use_markers else None,
+            markersize=3.0 if use_markers else 0.0,
+            label="Instantaneous Jitter |ΔRTT|",
+        )
+        ax_jit.plot(
+            idx,
+            rfc_w,
+            color="#b91c1c",
+            linewidth=1.9,
+            label="RFC 3550 Smoothed Jitter",
+        )
+        ax_jit.grid(True, linestyle=":", alpha=0.55)
+        ax_jit.set_ylabel("Jitter (ms)")
+        ax_jit.set_xlabel("Sample Index")
+        ax_jit.set_title(f"{title_prefix}Jitter (Latency Variance) over Samples")
+        ax_jit.legend(loc="upper right", fontsize=8.0, framealpha=0.92)
+
+        # Row 2: Latency Distribution (Histogram / Density) + Mean & +1σ
+        mean_v = float(np.mean(rtt_full))
+        std_v = float(np.std(rtt_full))
+        plus1 = mean_v + std_v
+        x_lo = max(0.0, float(np.min(rtt_full)) * 0.85)
+        x_hi = max(float(np.percentile(rtt_full, 99)) * 1.15, plus1 * 1.25, 45.0)
+        ax_hist.hist(
+            rtt_full,
+            bins=26,
+            range=(x_lo, x_hi),
+            density=True,
+            color="#a78bfa",
+            alpha=0.72,
+            edgecolor="#4c3a6e",
+            linewidth=0.75,
+        )
+        ax_hist.axvline(mean_v, color="#dc2626", linestyle="--", linewidth=1.6, label=f"Mean RTT: {mean_v:.1f} ms")
+        ax_hist.axvline(plus1, color="#f59e0b", linestyle=":", linewidth=1.7, label=f"+1σ ({plus1:.1f} ms)")
+        ax_hist.grid(True, linestyle=":", alpha=0.55)
+        ax_hist.set_ylabel("Probability Density")
+        ax_hist.set_xlabel("RTT (ms)")
+        ax_hist.set_title(f"{title_prefix}Latency Distribution (Histogram / Density · n={rtt_full.size})")
+        ax_hist.legend(loc="upper right", fontsize=8.0, framealpha=0.92)
+
+    if active_clients:
+        rtt_t_by_client = series.get("rtt_t_by_client", {})
+        t_coop: float | None = None
+        ops_t = series["n_ops_t"]
+        ops_val = series["n_ops_val"]
+        if ops_t.size > 0 and ops_val.size == ops_t.size:
+            idxs_2op = np.flatnonzero(ops_val >= 2)
+            if idxs_2op.size > 0:
+                t_coop = float(ops_t[idxs_2op[0]]) + 15.0
+
+        top_clients = active_clients[:2]
+        client_windows: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for idx_c, (cname, carr) in enumerate(top_clients):
+            t_arr = rtt_t_by_client.get(cname, np.zeros(0, dtype=float))
+            win_len = min(120, int(carr.size))
+            start_i = 0
+            if t_coop is not None and t_arr.size == carr.size:
+                match_idx = int(np.searchsorted(t_arr, t_coop, side="left"))
+                if match_idx < carr.size:
+                    start_i = min(match_idx, max(0, int(carr.size) - win_len))
+            win_arr = carr[start_i : start_i + win_len]
+            client_windows.append((cname, win_arr, carr))
+
+            slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", cname).strip("_") or f"cliente_{idx_c + 1}"
+            prefix_letter = chr(ord("a") + idx_c)
+            fig_c, axes_c = plt.subplots(3, 1, figsize=(10.0, 8.6), constrained_layout=True)
+            fig_c.suptitle(f"Perfil de Latencia RTT y Jitter (RFC 3550) · {cname} · {run_id}", fontsize=13.5, fontweight="bold")
+            _plot_course_rtt_jitter_column((axes_c[0], axes_c[1], axes_c[2]), win_arr, carr, title_prefix="", use_markers=True)
+            p_c = out_dir / f"08{prefix_letter}_rtt_jitter_curso_{slug}.png"
+            fig_c.savefig(p_c, dpi=300)
+            plt.close(fig_c)
+            out_paths.append(p_c)
+
+        # Combined side-by-side comparison for active cooperative clients
+        n_cols = len(client_windows)
+        fig_cmp, axes_cmp = plt.subplots(
+            3, n_cols, figsize=(7.0 * n_cols if n_cols > 1 else 10.0, 8.8), squeeze=False, constrained_layout=True
+        )
+        fig_cmp.suptitle(f"Latencia RTT y Jitter RFC 3550 por Equipo (ventana cooperativa n=120) · {run_id}", fontsize=13.5, fontweight="bold")
+        for col_i, (cname, win_arr, carr) in enumerate(client_windows):
+            _plot_course_rtt_jitter_column(
+                (axes_cmp[0, col_i], axes_cmp[1, col_i], axes_cmp[2, col_i]),
+                win_arr,
+                carr,
+                title_prefix=f"{cname} · ",
+                use_markers=True,
+            )
+        p8 = out_dir / "08_rtt_jitter_curso_comparativo.png"
+        fig_cmp.savefig(p8, dpi=300)
+        plt.close(fig_cmp)
+        out_paths.append(p8)
+
+        # Full-session profile for the primary client
+        prim_name, _, prim_full = client_windows[0]
+        fig_full, axes_full = plt.subplots(3, 1, figsize=(10.5, 8.6), constrained_layout=True)
+        fig_full.suptitle(f"Perfil Completo de Sesión RTT y Jitter RFC 3550 · {prim_name} · {run_id}", fontsize=13.5, fontweight="bold")
+        _plot_course_rtt_jitter_column((axes_full[0], axes_full[1], axes_full[2]), prim_full, prim_full, title_prefix="", use_markers=False)
+        p8c = out_dir / "08c_rtt_jitter_curso_sesion_completa.png"
+        fig_full.savefig(p8c, dpi=300)
+        plt.close(fig_full)
+        out_paths.append(p8c)
 
     return out_paths
 
@@ -1237,6 +1610,8 @@ def build_markdown_report(summary: dict[str, Any], out_dir: Path) -> Path:
 - `04_cooperacion_y_estados.png` — Línea de tiempo de estados de sala, número de operadores simultáneos y cronograma de *leases* por eje.
 - `05_resumen_para_diapositiva.png` — Resumen ejecutivo en 4 paneles claros (histograma de rapidez de red, latencia por equipo, uso por eje y barras de cumplimiento).
 - `06_resumen_seguridad_y_tarea.png` — Distribución de tiempo por estado y tarjetas KPI (trayectoria, velocidad, tarea virtual y seguridad).
+- `07_analisis_latencia_rtt_jitter.png` — Curva acumulada CDF de RTT, boxplot por dispositivo, jitter entre paquetes y tiempos internos.
+- `08_rtt_jitter_curso_comparativo.png` / `08a` / `08b` / `08c` — Series de RTT crudo, jitter instantáneo `|ΔRTT|` + jitter suavizado RFC 3550 e histograma de densidad (`Mean RTT` y `+1σ`) en el formato `plot_jitter.py` del curso `1MTR74`.
 
 ---
 

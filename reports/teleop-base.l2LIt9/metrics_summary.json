@@ -105,6 +105,118 @@
         "p99": 131.86,
         "max": 144.7
       }
+    },
+    "jitter_inter_packet_ms": {
+      "overall": {
+        "count": 7832,
+        "mean": 18.391,
+        "std": 31.823,
+        "min": 0.0,
+        "p50": 6.9,
+        "p95": 82.945,
+        "p99": 146.356,
+        "max": 354.4
+      },
+      "by_client": {
+        "Equipo 4VP9ZA": {
+          "count": 3790,
+          "mean": 9.565,
+          "std": 12.077,
+          "min": 0.0,
+          "p50": 6.1,
+          "p95": 30.765,
+          "p99": 61.153,
+          "max": 173.7
+        },
+        "Equipo 55QA40": {
+          "count": 3760,
+          "mean": 27.55,
+          "std": 41.874,
+          "min": 0.0,
+          "p50": 9.0,
+          "p95": 109.7,
+          "p99": 199.282,
+          "max": 354.4
+        },
+        "Equipo 77S454": {
+          "count": 130,
+          "mean": 7.617,
+          "std": 7.968,
+          "min": 0.1,
+          "p50": 4.6,
+          "p95": 27.675,
+          "p99": 32.817,
+          "max": 38.4
+        },
+        "Equipo 7YW04P": {
+          "count": 152,
+          "mean": 21.109,
+          "std": 31.523,
+          "min": 0.0,
+          "p50": 9.5,
+          "p95": 101.635,
+          "p99": 121.133,
+          "max": 129.6
+        }
+      }
+    },
+    "jitter_rfc3550_ms": {
+      "overall": {
+        "count": 7832,
+        "mean": 18.246,
+        "std": 11.258,
+        "min": 0.088,
+        "p50": 15.899,
+        "p95": 37.827,
+        "p99": 51.133,
+        "max": 76.819
+      },
+      "by_client": {
+        "Equipo 4VP9ZA": {
+          "count": 3790,
+          "mean": 9.527,
+          "std": 4.285,
+          "min": 0.156,
+          "p50": 8.602,
+          "p95": 16.666,
+          "p99": 28.662,
+          "max": 42.703,
+          "final": 9.636
+        },
+        "Equipo 55QA40": {
+          "count": 3760,
+          "mean": 27.383,
+          "std": 8.905,
+          "min": 0.431,
+          "p50": 25.947,
+          "p95": 43.84,
+          "p99": 57.611,
+          "max": 76.819,
+          "final": 41.904
+        },
+        "Equipo 77S454": {
+          "count": 130,
+          "mean": 6.744,
+          "std": 2.621,
+          "min": 0.088,
+          "p50": 7.49,
+          "p95": 10.586,
+          "p99": 11.203,
+          "max": 11.355,
+          "final": 7.568
+        },
+        "Equipo 7YW04P": {
+          "count": 152,
+          "mean": 19.466,
+          "std": 5.465,
+          "min": 0.769,
+          "p50": 20.013,
+          "p95": 27.001,
+          "p99": 29.325,
+          "max": 30.536,
+          "final": 16.644
+        }
+      }
     }
   },
   "direct_bridge": {
@@ -200,6 +312,27 @@
       "PITCH": 48.873,
       "YAW": 0.0,
       "PINZA": 9.055
+    },
+    "commanded_time_by_axis_owner_sec": {
+      "X": {
+        "Equipo 55QA40": 44.615
+      },
+      "Y": {
+        "Equipo 55QA40": 62.739
+      },
+      "Z": {
+        "Equipo 55QA40": 39.016
+      },
+      "ROLL": {
+        "Equipo 4VP9ZA": 52.974
+      },
+      "PITCH": {
+        "Equipo 4VP9ZA": 48.873
+      },
+      "YAW": {},
+      "PINZA": {
+        "Equipo 4VP9ZA": 9.055
+      }
     }
   },
   "joints_deg": {
@@ -246,6 +379,8 @@
     "delivered_max": 0,
     "total": 5,
     "grabs_detected": 0,
-    "impact_releases": 0
+    "impact_releases": 0,
+    "virtual_contacts_detected": 0,
+    "virtual_wall_blocks_detected": 0
   }
 }

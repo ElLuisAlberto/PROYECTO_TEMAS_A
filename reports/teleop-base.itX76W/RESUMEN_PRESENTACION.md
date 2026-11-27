@@ -1,6 +1,6 @@
 # Resumen de Presentación · JACO2 Teleoperación Cooperativa (`teleop-base.itX76W`)
 
-> Generado automáticamente a partir de `/tmp/teleop-base.itX76W` (2026-11-27T01:46:21.720Z → 2026-11-27T02:04:07.463Z, duración total **1065.74 s**).
+> Generado automáticamente a partir de `/tmp/teleop-base.itX76W` (2026-11-27T01:46:21.720Z → 2026-11-27T02:23:56.103Z, duración total **2254.38 s**).
 
 ---
 
@@ -33,14 +33,14 @@
 
 | Métrica | Valor medido |
 | --- | --- |
-| Duración de sesión analizada | **1065.74 s** |
-| Fuente de telemetría | `ros_physical_jaco2_fk` (37947 muestras) |
-| Eventos registrados | **37956** telemetría · **43977** protocolo |
-| Periodo del gateway (`dt` entre ticks) | Media **28.079 ms** (**35.614 Hz**) · σ = **3.16 ms** · p95 = **34.236 ms** · máx = **104.053 ms** (8.35% dentro de 15–25 ms) |
-| Frescura de postura (`pose_age_sec`) | Media **38.662 ms** · p50 = **29.541 ms** · p95 = **59.029 ms** · máx = **128.943 ms** (100.0% ≤ 300 ms) |
-| Latencia de red WebSocket (RTT) | Media **18.349 ms** · p50 **15.5 ms** · p95 **36.6 ms** · máx **232.6 ms** (20699 muestras) |
-| Tasa del bridge USB Kinova | Hardware físico USB · **99.12 tx/s** media (mín 2.0 · máx 103.0 Hz en 1015 intervalos) |
-| Mensajes de protocolo | `hello`: 19 · `claim`: 6 · `input`: 21137 · `heartbeat`: 22815 · `release`: 0 · `stop_global`: 0 · `rearm`: 0 |
+| Duración de sesión analizada | **2254.38 s** |
+| Fuente de telemetría | `ros_physical_jaco2_fk` (79477 muestras) |
+| Eventos registrados | **79486** telemetría · **60130** protocolo |
+| Periodo del gateway (`dt` entre ticks) | Media **28.362 ms** (**35.258 Hz**) · σ = **3.603 ms** · p95 = **35.471 ms** · máx = **104.053 ms** (7.41% dentro de 15–25 ms) |
+| Frescura de postura (`pose_age_sec`) | Media **38.756 ms** · p50 = **29.894 ms** · p95 = **60.243 ms** · máx = **128.943 ms** (100.0% ≤ 300 ms) |
+| Latencia de red WebSocket (RTT) | Media **18.285 ms** · p50 **15.6 ms** · p95 **36.44 ms** · máx **232.6 ms** (26213 muestras) |
+| Tasa del bridge USB Kinova | Hardware físico USB · **99.917 tx/s** media (mín 2.0 · máx 103.0 Hz en 2197 intervalos) |
+| Mensajes de protocolo | `hello`: 20 · `claim`: 6 · `input`: 29421 · `heartbeat`: 30683 · `release`: 0 · `stop_global`: 0 · `rearm`: 0 |
 | Errores / rechazos de protocolo | `{'room_not_operational': 1}` |
 
 ### 3.2 Cinemática del efector final, articulaciones y pinza
@@ -48,10 +48,10 @@
 | Métrica cinemática | Valor medido |
 | --- | --- |
 | Posición inicial `(X, Y, Z)` | `[0.2569, -0.0387, 0.1471]` m |
-| Posición final `(X, Y, Z)` | `[0.5712, -0.0721, 0.1133]` m |
+| Posición final `(X, Y, Z)` | `[0.5945, -0.0594, 0.1283]` m |
 | Excursión cartesiana `(ΔX, ΔY, ΔZ)` | `X`: **54.36 cm** · `Y`: **64.78 cm** · `Z`: **45.54 cm** |
-| Recorrido 3D total / desplaz. máx. | **7.9924 m** recorrido · **55.69 cm** desde inicio |
-| Velocidad lineal comandada | Activa **138.38 s** · pico **50.0 mm/s** |
+| Recorrido 3D total / desplaz. máx. | **8.2276 m** recorrido · **55.69 cm** desde inicio |
+| Velocidad lineal comandada | Activa **144.21 s** · pico **50.0 mm/s** |
 | Velocidad angular comandada | Activa **77.77 s** · pico **10.03 °/s** |
 | Pinza simulada (`F1–F3`) | Activa: **True** · rango **0.0 – 1.3963 rad** |
 | Tarea virtual cooperativa | Entregados **1 / 5** · agarres detectados: **2** · sueltas por impacto: **0** |
@@ -60,9 +60,9 @@
 
 | Eje | Tiempo activo |
 | --- | --- |
-| `X` | 25.78 s |
-| `Y` | 60.665 s |
-| `Z` | 51.936 s |
+| `X` | 28.732 s |
+| `Y` | 62.632 s |
+| `Z` | 52.849 s |
 | `ROLL` | 28.851 s |
 | `PITCH` | 48.923 s |
 | `YAW` | 0.0 s |
@@ -74,13 +74,13 @@
 | J2 | 96.61° | 152.41° | 55.8° |
 | J3 | 168.67° | 337.18° | 168.51° |
 | J4 | -264.34° | 235.0° | 499.34° |
-| J5 | -168.06° | 6.24° | 174.3° |
+| J5 | -168.06° | 8.64° | 176.7° |
 | J6 | 0.02° | 359.87° | 359.85° |
 
 ### 3.3 Cooperación multi-operador y estados de sala
 
 - Operadores distintos que reservaron ejes: **2** (máx. simultáneos: **2**, máx. ejes reservados a la vez: **6**).
-- Tiempo con 1 operador activo: **163.5 s** · Tiempo en solapamiento cooperativo (≥2 operadores simultáneos): **533.59 s** (**76.55%** del tiempo ocupado).
+- Tiempo con 1 operador activo: **581.32 s** · Tiempo en solapamiento cooperativo (≥2 operadores simultáneos): **533.59 s** (**47.86%** del tiempo ocupado).
 
 | Operador | Ejes reservados |
 | --- | --- |
@@ -90,10 +90,10 @@
 | Estado de sala | Tiempo acumulado |
 | --- | --- |
 | `NOT_READY` | 0.21 s (0.0%) |
-| `SIM_ONLY` | 5.59 s (0.5%) |
-| `READY` | 362.85 s (34.0%) |
-| `ACTIVE` | 605.88 s (56.9%) |
-| `PAUSED` | 91.21 s (8.6%) |
+| `SIM_ONLY` | 5.59 s (0.2%) |
+| `READY` | 1133.67 s (50.3%) |
+| `ACTIVE` | 1023.7 s (45.4%) |
+| `PAUSED` | 91.21 s (4.0%) |
 
 ### 3.4 Gráficos generados para diapositivas
 
@@ -103,13 +103,15 @@
 - `04_cooperacion_y_estados.png` — Línea de tiempo de estados de sala, número de operadores simultáneos y cronograma de *leases* por eje.
 - `05_resumen_para_diapositiva.png` — Resumen ejecutivo en 4 paneles claros (histograma de rapidez de red, latencia por equipo, uso por eje y barras de cumplimiento).
 - `06_resumen_seguridad_y_tarea.png` — Distribución de tiempo por estado y tarjetas KPI (trayectoria, velocidad, tarea virtual y seguridad).
+- `07_analisis_latencia_rtt_jitter.png` — Curva acumulada CDF de RTT, boxplot por dispositivo, jitter entre paquetes y tiempos internos.
+- `08_rtt_jitter_curso_comparativo.png` / `08a` / `08b` / `08c` — Series de RTT crudo, jitter instantáneo `|ΔRTT|` + jitter suavizado RFC 3550 e histograma de densidad (`Mean RTT` y `+1σ`) en el formato `plot_jitter.py` del curso `1MTR74`.
 
 ---
 
 ## 4. Resultados, análisis y conclusiones
 
-1. **Estabilidad en tiempo real del control distribuido:** El gateway sostuvo una frecuencia efectiva cercana a **35.614 Hz** (media **28.079 ms**, **8.35%** dentro de 15–25 ms) y el bridge USB sostuvo **99.12 tx/s**, cumpliendo la tasa nominal de 100 Hz del Kinova JACO2 sin desbordamientos ni errores críticos del SDK (`errors=0`).
-2. **Frescura de telemetría bajo el umbral de seguridad:** El **100.0%** de las muestras de postura llegaron por debajo del watchdog de 300 ms (media **38.662 ms**, p95 **59.029 ms**), validando que el cierre automático de seguridad ante telemetría vencida no introduce falsos disparos en operación normal.
-3. **Ejecución segura y cooperativa:** El aislamiento estricto de componentes por *leases* (máx. 3 por operador, total **21136** comandos `input` aceptados) y el desarme inicial protegen al manipulador físico durante las pruebas en red local.
+1. **Estabilidad en tiempo real del control distribuido:** El gateway sostuvo una frecuencia efectiva cercana a **35.258 Hz** (media **28.362 ms**, **7.41%** dentro de 15–25 ms) y el bridge USB sostuvo **99.917 tx/s**, cumpliendo la tasa nominal de 100 Hz del Kinova JACO2 sin desbordamientos ni errores críticos del SDK (`errors=0`).
+2. **Frescura de telemetría bajo el umbral de seguridad:** El **100.0%** de las muestras de postura llegaron por debajo del watchdog de 300 ms (media **38.756 ms**, p95 **60.243 ms**), validando que el cierre automático de seguridad ante telemetría vencida no introduce falsos disparos en operación normal.
+3. **Ejecución segura y cooperativa:** El aislamiento estricto de componentes por *leases* (máx. 3 por operador, total **29420** comandos `input` aceptados) y el desarme inicial protegen al manipulador físico durante las pruebas en red local.
 4. **Siguiente corrida recomendada (para completar la foto 100% de exposición):**
    - Esta corrida ya incluye mediciones completas de **RTT WebSocket** y **cooperación simultánea**, listas para presentarse en las diapositivas.
